@@ -1,0 +1,125 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>十个小节与七十个 stage · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="十个小节与七十个-stage">十个小节与七十个 stage</h1>
+<p>原有十个构建阶段改为十个小节，小节内按实现顺序拆成 70 个 stage。
+<a href="../../grader/content/README.html">课程目录</a> 列出每一项任务、编号和验收检查。
+主教程 <code>tutorial/minik8s-corrected.md</code> 保持原样。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>小节</th>
+<th style="text-align: right;">Stage 数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>手工容器</td>
+<td style="text-align: right;">5</td>
+</tr>
+<tr>
+<td>CRI</td>
+<td style="text-align: right;">6</td>
+</tr>
+<tr>
+<td>KV</td>
+<td style="text-align: right;">9</td>
+</tr>
+<tr>
+<td>API</td>
+<td style="text-align: right;">9</td>
+</tr>
+<tr>
+<td>HTTP Watch</td>
+<td style="text-align: right;">5</td>
+</tr>
+<tr>
+<td>Kubelet</td>
+<td style="text-align: right;">11</td>
+</tr>
+<tr>
+<td>Scheduler</td>
+<td style="text-align: right;">4</td>
+</tr>
+<tr>
+<td>Controllers</td>
+<td style="text-align: right;">9</td>
+</tr>
+<tr>
+<td>CNI</td>
+<td style="text-align: right;">5</td>
+</tr>
+<tr>
+<td>Service Proxy</td>
+<td style="text-align: right;">7</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="提交与导航">提交与导航</h2>
+<p>stage 使用 <code>3.1</code> 形式的编号。普通 submit 只运行当前 stage 的一个检查，通过后进入下一项。
+<code>submit --all</code> 从头逐项执行 70 项，失败处停止，保存连续通过的进度。
+单个数字 3 是 3.1 的别名；<code>section 3</code> 阅读 KV 小节完整说明。</p>
+<pre><code class="language-bash">minik8s stage 3.1
+minik8s section 3
+minik8s submit
+minik8s submit --stage 3.4
+minik8s submit --all
+minik8s serve
+</code></pre>
+<p>前端以折叠小节组织 stage，显示每节和全课程进度。任务页内可以打开小节原理说明，再返回
+当前 stage。服务接口同时提供 sections 与 stages；API 写请求使用字符串 stage 编号。
+重复启动同一项目的服务会返回已有服务地址。</p>
+<h2 id="测试粒度">测试粒度</h2>
+<p>新增细分断言位于 <code>grader/steps/</code>，与原有公共断言一起供课程调用。统一目录与映射来自
+<code>grader/course/curriculum.py</code>；<code>grader/build-course.py</code> 发布任务页和共享 JSON 清单。
+CLI、Bash 与前端使用同一组 ID。</p>
+<p>底层课程入口示例：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage 3 --step KV-GET \
+  --driver /path/to/my-driver --output /tmp/kv-get-new
+</code></pre>
+<p><code>--step</code> 验证指定的检查 key、单项结果与清理，结果使用 step_complete。
+原 <code>test.sh --stage N</code>、<code>--only</code> 和 44 项综合检查保留，综合阶段继续使用 stage_complete。</p>
+<p>前置依赖按教学顺序收缩：</p>
+<ul>
+<li>KV 第一项只调用 put/get；版本、CAS、List、Watch 分别在后续 stage 验收。</li>
+<li>API 第一项只要求创建与读取。启动探测接受 HTTP 响应；本次独立 API 进程由生命周期
+  adapter 停止，数据库与请求记录留在测试工作目录，便于复查。</li>
+<li>CNI ADD 第一项由测试设施回收本次专用 namespace/bridge，后续再验收地址释放与 DEL 语义。
+  所有网络操作仍在经身份核对的 KVM 内执行。</li>
+</ul>
+<h2 id="进度兼容">进度兼容</h2>
+<p>新进度使用 schema_version=2 和字符串 stage ID。旧版通过一个小节，映射为该节全部 stage
+完成；例如旧版完成小节 1/2 后，新版从 3.1 开始。
+读取时提供转换视图；第一次保存新版进度前，备份旧文件到 progress.v1.json。
+已有备份与运行记录保留，迁移与配置写入共用项目锁。</p>
+<h2 id="验证结果">验证结果</h2>
+<ul>
+<li>64 项课程/服务测试通过，覆盖分组目录、ID、单项前进、全量停止、迁移备份、错误状态、
+  取消、项目锁与重复启动服务。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-user-20261108/summary.json">普通用户态验收（本地工程附件）</span>：36 个 stage 全部通过。
+  只实现 put/get 的程序通过 3.1；只实现创建/读取的 API 通过 4.1。
+  故意错误的 CAS 转发器在对应的 3.4 被检出。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-submit-20261108/summary.json">实际连续提交（本地工程附件）</span>：九次独立 CLI 提交从 3.1
+  前进到 4.1，旧文件已备份。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-kvm-20261108-final/summary.json">KVM 全量验收（本地工程附件）</span>：70 个细分 stage 全部通过，
+  随后原 44 项综合回归全部通过。另完成镜像缓存复验和故意错误 CNI CHECK 检出。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-web-20261108-release/summary.json">浏览器验收（本地工程附件）</span>：11 个场景通过。
+  包含分组导航、单项真实 KV 提交、刷新保持进度、小节原理阅读与返回、取消、配置、
+  全量环境检查，以及空闲/测试期间的阅读稳定性。</li>
+<li>桌面与移动截图已检查：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-web-20261108-release/desktop-stage3.png">桌面（本地工程附件）</span>、
+  <span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-web-20261108-release/mobile-stage4.png">移动（本地工程附件）</span>。浏览器无运行时异常。</li>
+</ul>
+<p>首轮 KVM 跑到第 70 项时，函数名校验拒绝 proxy_e2e 中的数字。修正为合法函数名规则后，
+重新执行全部 70 项与原 44 项回归。失败记录保留在 fine-kvm-20261108。
+两轮共四台临时 VM 均已停止销毁，下载输入在最终通过后删除。</p>
+<p>用户预览服务保留在 http://127.0.0.1:7331。测试用服务与延迟 driver 均已停止。
+交付文件、校验值与环境清理结果见
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/fine-delivery-20261108/summary.json">最终汇总（本地工程附件）</span>。</p>
+<h2 id="复验">复验</h2>
+<pre><code class="language-bash">python3 -m unittest discover -s grader/tests -v
+python3 grader/verify-course.py --output /tmp/fine-course-check-new
+python3 grader/verify-web.py --output /tmp/fine-web-check-new
+python3 reference/tests/vm/run.py --course-cli \
+  --image "$LAB/base.qcow2" --sha512 "$IMAGE_SHA512" \
+  --crictl "$LAB/crictl.tar.gz" --crictl-sha256 "$CRI_SHA256" \
+  --output /tmp/fine-course-vm-new
+</code></pre>
+<p>接入和环境要求见 <a href="../../grader/docs/COURSE-CLI.html">课程命令</a> 与
+<a href="../../grader/docs/LOCAL-UI.html">本地界面</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

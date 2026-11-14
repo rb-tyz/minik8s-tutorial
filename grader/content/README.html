@@ -1,0 +1,486 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MiniK8s 课程目录 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="minik8s-课程目录">MiniK8s 课程目录</h1>
+<p>课程分为十个小节、70 个 stage。每次普通 submit 只验收当前一项能力。</p>
+<p>编号使用“小节.阶段”，例如 <code>minik8s stage 3.1</code>。小节原理通过 <code>minik8s section 3</code> 阅读。</p>
+<p><a href="../docs/FIRST-SUBMISSION.html">从空 main 到第一次提交</a></p>
+<p><a href="../docs/ADAPTER.html">程序调用与消息格式</a></p>
+<p><a href="../docs/COURSE-CLI.html">提交、进度迁移与机器接口</a></p>
+<h2 id="1-手工运行容器">1. 手工运行容器</h2>
+<p><a href="stages/01-containers.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.1</td>
+<td><a href="steps/1.1.html">启动任务并取得退出码</a></td>
+<td><code>CONTAINER-EXIT</code></td>
+</tr>
+<tr>
+<td>1.2</td>
+<td><a href="steps/1.2.html">设置根目录与 PID 空间</a></td>
+<td><code>CONTAINER-PIDROOT</code></td>
+</tr>
+<tr>
+<td>1.3</td>
+<td><a href="steps/1.3.html">隔离网络与主机名视图</a></td>
+<td><code>CONTAINER-NAMESPACES</code></td>
+</tr>
+<tr>
+<td>1.4</td>
+<td><a href="steps/1.4.html">限制 CPU、内存与进程数</a></td>
+<td><code>CONTAINER-CGROUP</code></td>
+</tr>
+<tr>
+<td>1.5</td>
+<td><a href="steps/1.5.html">收紧系统调用与权限</a></td>
+<td><code>CONTAINER-SECURITY</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="2-cri-边界">2. CRI 边界</h2>
+<p><a href="stages/02-cri.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2.1</td>
+<td><a href="steps/2.1.html">创建 Pod sandbox</a></td>
+<td><code>CRI-SANDBOX</code></td>
+</tr>
+<tr>
+<td>2.2</td>
+<td><a href="steps/2.2.html">创建但暂不启动容器</a></td>
+<td><code>CRI-CREATE</code></td>
+</tr>
+<tr>
+<td>2.3</td>
+<td><a href="steps/2.3.html">启动容器并列举任务</a></td>
+<td><code>CRI-START</code></td>
+</tr>
+<tr>
+<td>2.4</td>
+<td><a href="steps/2.4.html">保留结束任务的状态</a></td>
+<td><code>CRI-EXIT</code></td>
+</tr>
+<tr>
+<td>2.5</td>
+<td><a href="steps/2.5.html">拉取并运行缺失的镜像</a></td>
+<td><code>CRI-PULL</code></td>
+</tr>
+<tr>
+<td>2.6</td>
+<td><a href="steps/2.6.html">删除容器与 sandbox</a></td>
+<td><code>CRI-LIFECYCLE</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="3-kv">3. KV</h2>
+<p><a href="stages/03-kv.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3.1</td>
+<td><a href="steps/3.1.html">写入和读取一个键</a></td>
+<td><code>KV-GET</code></td>
+</tr>
+<tr>
+<td>3.2</td>
+<td><a href="steps/3.2.html">按前缀列举键</a></td>
+<td><code>KV-LIST</code></td>
+</tr>
+<tr>
+<td>3.3</td>
+<td><a href="steps/3.3.html">给提交分配版本</a></td>
+<td><code>KV-REVISION</code></td>
+</tr>
+<tr>
+<td>3.4</td>
+<td><a href="steps/3.4.html">拒绝旧版本覆盖</a></td>
+<td><code>KV-CAS</code></td>
+</tr>
+<tr>
+<td>3.5</td>
+<td><a href="steps/3.5.html">删除键并返回旧值</a></td>
+<td><code>KV-DELETE</code></td>
+</tr>
+<tr>
+<td>3.6</td>
+<td><a href="steps/3.6.html">补发快照后的事件</a></td>
+<td><code>KV-REPLAY</code></td>
+</tr>
+<tr>
+<td>3.7</td>
+<td><a href="steps/3.7.html">推送删除事件并取消订阅</a></td>
+<td><code>KV-WATCH</code></td>
+</tr>
+<tr>
+<td>3.8</td>
+<td><a href="steps/3.8.html">处理过旧的订阅位置</a></td>
+<td><code>KV-COMPACT</code></td>
+</tr>
+<tr>
+<td>3.9</td>
+<td><a href="steps/3.9.html">在进程崩溃后恢复</a></td>
+<td><code>KV-RECOVERY</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="4-api">4. API</h2>
+<p><a href="stages/04-api.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4.1</td>
+<td><a href="steps/4.1.html">创建并查询 Pod</a></td>
+<td><code>API-CREATE</code></td>
+</tr>
+<tr>
+<td>4.2</td>
+<td><a href="steps/4.2.html">列举 namespace 内的对象</a></td>
+<td><code>API-LIST</code></td>
+</tr>
+<tr>
+<td>4.3</td>
+<td><a href="steps/4.3.html">按版本替换对象</a></td>
+<td><code>API-REPLACE</code></td>
+</tr>
+<tr>
+<td>4.4</td>
+<td><a href="steps/4.4.html">删除与同名重建</a></td>
+<td><code>API-DELETE</code></td>
+</tr>
+<tr>
+<td>4.5</td>
+<td><a href="steps/4.5.html">合并局部更新</a></td>
+<td><code>API-PATCH</code></td>
+</tr>
+<tr>
+<td>4.6</td>
+<td><a href="steps/4.6.html">单独更新观察状态</a></td>
+<td><code>API-STATUS</code></td>
+</tr>
+<tr>
+<td>4.7</td>
+<td><a href="steps/4.7.html">拒绝无效输入</a></td>
+<td><code>API-VALIDATION</code></td>
+</tr>
+<tr>
+<td>4.8</td>
+<td><a href="steps/4.8.html">把 Pod 绑定到 Node</a></td>
+<td><code>API-BINDING</code></td>
+</tr>
+<tr>
+<td>4.9</td>
+<td><a href="steps/4.9.html">重启后保留对象身份</a></td>
+<td><code>API-RESTART</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="5-watch">5. Watch</h2>
+<p><a href="stages/05-watch.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5.1</td>
+<td><a href="steps/5.1.html">发送初始对象快照</a></td>
+<td><code>WATCH-SNAPSHOT</code></td>
+</tr>
+<tr>
+<td>5.2</td>
+<td><a href="steps/5.2.html">标记初始同步结束</a></td>
+<td><code>WATCH-BOOKMARK</code></td>
+</tr>
+<tr>
+<td>5.3</td>
+<td><a href="steps/5.3.html">接续 List 与 Watch</a></td>
+<td><code>WATCH-REPLAY</code></td>
+</tr>
+<tr>
+<td>5.4</td>
+<td><a href="steps/5.4.html">发送完整删除事件</a></td>
+<td><code>WATCH-INITIAL</code></td>
+</tr>
+<tr>
+<td>5.5</td>
+<td><a href="steps/5.5.html">拒绝非法游标</a></td>
+<td><code>WATCH-INVALID</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="6-kubelet">6. Kubelet</h2>
+<p><a href="stages/06-kubelet.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>6.1</td>
+<td><a href="steps/6.1.html">运行已绑定的 Pod</a></td>
+<td><code>NODE-RUN</code></td>
+</tr>
+<tr>
+<td>6.2</td>
+<td><a href="steps/6.2.html">传递资源与安全配置</a></td>
+<td><code>NODE-RESOURCES</code></td>
+</tr>
+<tr>
+<td>6.3</td>
+<td><a href="steps/6.3.html">上报退出码与终态</a></td>
+<td><code>NODE-EXIT</code></td>
+</tr>
+<tr>
+<td>6.4</td>
+<td><a href="steps/6.4.html">等待 init 容器完成</a></td>
+<td><code>NODE-INIT</code></td>
+</tr>
+<tr>
+<td>6.5</td>
+<td><a href="steps/6.5.html">向容器传入环境变量</a></td>
+<td><code>NODE-ENV</code></td>
+</tr>
+<tr>
+<td>6.6</td>
+<td><a href="steps/6.6.html">在 init 与应用间共享目录</a></td>
+<td><code>NODE-SHARED</code></td>
+</tr>
+<tr>
+<td>6.7</td>
+<td><a href="steps/6.7.html">执行只读卷约束</a></td>
+<td><code>NODE-READONLY</code></td>
+</tr>
+<tr>
+<td>6.8</td>
+<td><a href="steps/6.8.html">按 OnFailure 策略重试</a></td>
+<td><code>NODE-RETRY</code></td>
+</tr>
+<tr>
+<td>6.9</td>
+<td><a href="steps/6.9.html">恢复镜像拉取失败</a></td>
+<td><code>NODE-PULL</code></td>
+</tr>
+<tr>
+<td>6.10</td>
+<td><a href="steps/6.10.html">重启后接管现有容器</a></td>
+<td><code>NODE-RESTART</code></td>
+</tr>
+<tr>
+<td>6.11</td>
+<td><a href="steps/6.11.html">度过 API 短暂中断</a></td>
+<td><code>NODE-API-OUTAGE</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="7-scheduler">7. Scheduler</h2>
+<p><a href="stages/07-scheduler.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7.1</td>
+<td><a href="steps/7.1.html">筛选可用节点</a></td>
+<td><code>SCHED-FILTER</code></td>
+</tr>
+<tr>
+<td>7.2</td>
+<td><a href="steps/7.2.html">计算已绑定请求的占用</a></td>
+<td><code>SCHED-CAPACITY</code></td>
+</tr>
+<tr>
+<td>7.3</td>
+<td><a href="steps/7.3.html">计入 init 资源需求</a></td>
+<td><code>SCHED-INIT</code></td>
+</tr>
+<tr>
+<td>7.4</td>
+<td><a href="steps/7.4.html">按使用比例评分</a></td>
+<td><code>SCHED-SCORE</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="8-controllers">8. Controllers</h2>
+<p><a href="stages/08-controllers.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8.1</td>
+<td><a href="steps/8.1.html">根据模板创建副本</a></td>
+<td><code>CTRL-CREATE</code></td>
+</tr>
+<tr>
+<td>8.2</td>
+<td><a href="steps/8.2.html">补回被删除的副本</a></td>
+<td><code>CTRL-REPLACE</code></td>
+</tr>
+<tr>
+<td>8.3</td>
+<td><a href="steps/8.3.html">区分归属与标签</a></td>
+<td><code>CTRL-OWNER</code></td>
+</tr>
+<tr>
+<td>8.4</td>
+<td><a href="steps/8.4.html">删除父对象并回收子对象</a></td>
+<td><code>CTRL-RS</code></td>
+</tr>
+<tr>
+<td>8.5</td>
+<td><a href="steps/8.5.html">分批替换 Deployment 模板</a></td>
+<td><code>CTRL-ROLL</code></td>
+</tr>
+<tr>
+<td>8.6</td>
+<td><a href="steps/8.6.html">生成 Service 后端端口</a></td>
+<td><code>CTRL-PORT</code></td>
+</tr>
+<tr>
+<td>8.7</td>
+<td><a href="steps/8.7.html">撤下未就绪的后端</a></td>
+<td><code>CTRL-READY</code></td>
+</tr>
+<tr>
+<td>8.8</td>
+<td><a href="steps/8.8.html">清理 Service 的自动后端</a></td>
+<td><code>CTRL-ENDPOINTS</code></td>
+</tr>
+<tr>
+<td>8.9</td>
+<td><a href="steps/8.9.html">在重启后继续调谐</a></td>
+<td><code>CTRL-RESTART</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="9-cni">9. CNI</h2>
+<p><a href="stages/09-cni.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9.1</td>
+<td><a href="steps/9.1.html">为 Pod 配置地址与路由</a></td>
+<td><code>CNI-ADD</code></td>
+</tr>
+<tr>
+<td>9.2</td>
+<td><a href="steps/9.2.html">分配、耗尽与复用地址</a></td>
+<td><code>CNI-IPAM</code></td>
+</tr>
+<tr>
+<td>9.3</td>
+<td><a href="steps/9.3.html">检查实际网络配置</a></td>
+<td><code>CNI-CHECK</code></td>
+</tr>
+<tr>
+<td>9.4</td>
+<td><a href="steps/9.4.html">重复删除已经消失的网络</a></td>
+<td><code>CNI-DEL</code></td>
+</tr>
+<tr>
+<td>9.5</td>
+<td><a href="steps/9.5.html">在两个 Pod 网络间通信</a></td>
+<td><code>CNI-TRAFFIC</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="10-service-proxy">10. Service Proxy</h2>
+<p><a href="stages/10-service-proxy.html">小节说明</a></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>任务</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10.1</td>
+<td><a href="steps/10.1.html">访问单后端 Service</a></td>
+<td><code>PROXY-TCP</code></td>
+</tr>
+<tr>
+<td>10.2</td>
+<td><a href="steps/10.2.html">区分多个 TCP 端口</a></td>
+<td><code>PROXY-MULTIPORT</code></td>
+</tr>
+<tr>
+<td>10.3</td>
+<td><a href="steps/10.3.html">转发 UDP 请求</a></td>
+<td><code>PROXY-UDP</code></td>
+</tr>
+<tr>
+<td>10.4</td>
+<td><a href="steps/10.4.html">通过 Service 访问自身</a></td>
+<td><code>PROXY-HAIRPIN</code></td>
+</tr>
+<tr>
+<td>10.5</td>
+<td><a href="steps/10.5.html">更新一组可用后端</a></td>
+<td><code>PROXY-BALANCE</code></td>
+</tr>
+<tr>
+<td>10.6</td>
+<td><a href="steps/10.6.html">重启时保留无关规则</a></td>
+<td><code>PROXY-FOREIGN</code></td>
+</tr>
+<tr>
+<td>10.7</td>
+<td><a href="steps/10.7.html">验收完整的 MiniK8s</a></td>
+<td><code>PROXY-E2E</code></td>
+</tr>
+</tbody>
+</table></div></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

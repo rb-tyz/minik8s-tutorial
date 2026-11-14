@@ -1,0 +1,157 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>07 ReplicaSet：把副本数反复拉回期望 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="07-replicaset把副本数反复拉回期望">07 ReplicaSet：把副本数反复拉回期望</h1>
+<p>模块：<strong>工作负载模块 / RS</strong>。依赖 API、Informer/Queue；实际运行验收依赖执行模块。
+对应原文 §13.3、§13.6 和 RS 类订正。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>实现创建副本、删除后补齐、缩容、状态上报与父对象删除清理。完成后，应能解释为何标签
+相同的独立 Pod 不被计入，以及同名父对象重建后怎样区分新旧子对象。</p>
+<p>需要掌握模板复制、label/selector、ownerReference 的 UID、CAS 和工作队列。本章可先在
+API 中观察 Pod 对象，再接 kubelet 看实际容器。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>RS 声明 replicas=N，并给出 Pod template。控制器读取当前状态，少了创建，多了删除；下一次
+检查根据最新集合重算。它管理 Pod 对象，scheduler/kubelet 才负责分配和运行。</p>
+<pre><code class="language-text">RS.spec -&gt; RS reconcile -&gt; Pod 对象 -&gt; scheduler/kubelet
+                ^                           |
+                +------- Pod 变化/状态 ------+
+</code></pre>
+<p>重复事件只提示再检查一次；创建响应丢失、进程重启或 Pod 被手动删除，都可以从现有对象恢复。</p>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<p>RS.spec 包含 replicas、selector.matchLabels、template.metadata/spec。API 校验 selector
+非空且与 template labels 一致；nil replicas 默认 1，显式 0 要保留。</p>
+<p>读取 RS 和同 namespace Pod List，POST Pod，用 RV DELETE Pod，最后写 RS /status。
+选择本 RS 的 Pod 要同时满足 controller owner 的 kind/name/UID 和 selector；API 版本也要
+符合公开 owner 约定。详情见 <a href="../docs/contracts/replicaset.html">RS 契约</a>。</p>
+<p>独立 Pod 即使标签相同仍保持独立。自有 Pod 改标签后暂时不匹配，也不再计入副本；父对象
+删除时，清理依据仍是归属，旧标签不会让自有子对象永久遗留。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="观察并计算差额">观察并计算差额</h3>
+<p>GET 当前 RS，List 同 namespace 的 Pod，筛出自有且 selector 匹配的集合。Succeeded/Failed
+不计入活跃副本，回收后可补建。Pending 仍属于活跃副本，不能因为它还没 Ready 就反复创建。</p>
+<pre><code class="language-text">active = owned + selector 匹配 + 非终止
+extra = desired - len(active)
+extra &gt; 0: 补建
+extra &lt; 0: 选择多余对象缩容
+</code></pre>
+<h3 id="从-template-生成-pod">从 template 生成 Pod</h3>
+<p>复制模板，填 name/namespace，清掉旧 UID/RV/时间戳，设置父 RS 的 controller owner。
+名字必须适合重试：一种简单做法是父 UID 摘要加 slot，下一轮先 List，再补缺少的 slot。
+名称被无关对象占用时保留它并换一个候选。私有命名方式可以不同，重复协调的行为相同。</p>
+<p>每个成功写入只计一次；写入失败或结果未知时，下一轮从 API 重读。参考实现每轮 List 建账，
+因此不需要另一份 expectations 账本去补偿缓存尚未观察到的创建。</p>
+<h3 id="状态与级联">状态与级联</h3>
+<p>动作后重新 List，计算活跃数量、完整模板标签匹配数和 Ready 数。Ready 要求 Pod Running，
+且应用容器状态完整并都为 Ready；Available 暂与 Ready 相同。相同 status 由 API no-op 抑制。</p>
+<p>父 RS 删除后，根据旧 owner UID 回收自有 Pod；同名新 RS 存在时重新比较 UID。Deployment
+以后按同样的简单归属策略清理 RS，再由 RS 这层清理 Pod。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>每个父 key 串行 reconcile，HTTP 回调只入队。Pod 的 owner/label 更新时，旧对象与新对象
+都参与事件映射，避免失去旧归属通知。</p>
+<p>缩容采用稳定策略并携带 Pod RV；遇到 409 重读。部分创建成功、后续失败时保留已成功副本，
+下轮按现状补齐。多个 HTTP 写入不是事务，不能用共享缓存的“已改对象”替代成功响应。</p>
+<p>把 404 当成对象已经消失处理，把暂时 API 错误交回退避队列。父对象同名重建后，旧 UID
+的清理与新 UID 的协调分开判断，避免误删新实例的子对象。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>本课程不做孤儿认领、selector 变化后的自动释放、finalizer 或通用 GC 图。保持无归属对象，
+用父控制器的简单清理实现原文可选 GC 需求。扩缩容对象顺序和单轮批大小属于实现选择。</p>
+<p>删除 Pod API 对象与 kubelet 清理容器是异步过程。副本数按对象语义收敛，真实运行资源随后
+回收；网络验收要继续观察 Endpoints 和规则。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>任务</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1 集合定义</td>
+<td>owner+selector、活跃与 Ready</td>
+<td>独立/终止/改标签对象被正确区分</td>
+</tr>
+<tr>
+<td>R2 模板与补建</td>
+<td>深拷贝、身份、名称与部分失败</td>
+<td>少副本时创建，重试不超建</td>
+</tr>
+<tr>
+<td>R3 缩容/状态</td>
+<td>稳定选择、RV 删除、重新统计</td>
+<td>0 副本和状态稳定都可收敛</td>
+</tr>
+<tr>
+<td>R4 事件/恢复</td>
+<td>RS/Pod 入队、同名 UID、重启</td>
+<td>删除后补建，未知响应可恢复</td>
+</tr>
+<tr>
+<td>R5 清理</td>
+<td>父删除后回收自有对象</td>
+<td>无关对象保留，运行资源最终释放</td>
+</tr>
+</tbody>
+</table></div>
+<p>先完成 replicas=1，再改成 2；先删一个子 Pod，再做扩到 3、缩到 1、缩到 0。最后检查父对象
+删除/重建和丢失响应，避免把所有集成问题留到 Deployment。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>示例为 <span class="local-artifact" title="本地工程附件：tutorial/examples/replicaset.json">replicaset.json（本地工程附件）</span>。在获批 VM 的完整环境中：</p>
+<pre><code class="language-bash">curl -fsS -X POST "$API/apis/apps/v1/namespaces/$NS/replicasets" \
+  -H 'Content-Type: application/json' --data-binary @tutorial/examples/replicaset.json
+bash grader/grade.sh --url "$API" --case rs --vm-id "$VM_UUID" --output /tmp/course-rs-new
+</code></pre>
+<p>示例请求和 grader 使用各自 namespace/名字；手动示例要按 <a href="labs/workloads.html">实验指南</a>
+删除，grader 自己清理本次对象。参考单元/HTTP 检查为 <code>go test -race ./internal/controller</code>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>replicas=2</td>
+<td>两个自有活跃 Pod，执行模块就绪后 Ready=2</td>
+</tr>
+<tr>
+<td>删除一个子 Pod</td>
+<td>新 UID 补齐，旧 UID 不再计入</td>
+</tr>
+<tr>
+<td>扩缩容至 3/1/0</td>
+<td>对象与真实容器最终达到目标</td>
+</tr>
+<tr>
+<td>子 Pod 终止</td>
+<td>终止项被回收，补齐活跃副本</td>
+</tr>
+<tr>
+<td>同标签独立 Pod</td>
+<td>保留且不计入</td>
+</tr>
+<tr>
+<td>自有 Pod 改标签</td>
+<td>不计入，补建匹配副本</td>
+</tr>
+<tr>
+<td>父同名重建、写响应丢失</td>
+<td>UID 不混淆，不超建或过量删除</td>
+</tr>
+<tr>
+<td>删除父对象</td>
+<td>仅自有子对象和相应运行资源被回收</td>
+</tr>
+</tbody>
+</table></div>
+<p>真实 CRI 结果见 <a href="../docs/progress/N01-R01.html">N01/R01</a>，当前汇总见 <a href="../docs/progress/ALIGNMENT.html">对齐验收</a>。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>每轮记录 parent UID、desired、owned/selected/active/ready、HTTP 操作和 RV。副本不够时
+先看 selector/template，再看 owner；超过期望时，对照创建成功的响应与下一轮 List。</p>
+<p>对缓存对象原地修改后写入失败，会污染下一轮判断。把所有 Running 相同标签对象都算作
+自己的副本，则会吞掉独立 Pod 的份额。若状态不断更新 RV，检查排序和 no-op 比较。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §13.3、§13.6；RS 类订正；<a href="../docs/contracts/replicaset.html">RS 契约</a>。</li>
+<li>下一模块：<a href="08-deployment-endpoints.html">08 Deployment/Endpoints</a>。其中 Deployment
+  依赖 RS，Endpoints 只依赖 Service 与 Pod API，可以独立实施。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

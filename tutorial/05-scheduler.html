@@ -1,0 +1,158 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>05 Scheduler：给待运行 Pod 选择一个节点 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="05-scheduler给待运行-pod-选择一个节点">05 Scheduler：给待运行 Pod 选择一个节点</h1>
+<p>模块：<strong>执行模块 / 调度</strong>。依赖基础层 01–04；原文 §12，订正对应 SCHED 类记录。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>实现资源计算、节点过滤、简单评分和条件绑定。先通过 API 对象验证分配，再在执行模块
+接入真实节点。完成后应能解释一个 Pod 为何等待、为何选中某节点，以及删除后资源怎样释放。</p>
+<p>需要掌握前面的 List/Watch、工作队列、UID/RV 与整数运算。无需了解 Kubernetes 的完整
+调度插件体系；本章只做 Filter→Score→Bind。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>scheduler 把选择写到 Pod.spec.nodeName，kubelet 再处理属于本节点的 Pod。两者由 API
+连接，scheduler 自己不启动容器。用户已经指定 nodeName 的 Pod 跳过调度。</p>
+<pre><code class="language-text">未绑定 Pod -&gt; 资源过滤 -&gt; 候选评分 -&gt; /binding -&gt; 指定节点的 kubelet
+</code></pre>
+<p>工作队列中的 key 是检查提示。取到 key 后重读目标 Pod；已删除、已绑定或已终止的对象
+不再重复分配。容量变化和 Pod 删除会让等待任务重新尝试。</p>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<p>Node 提供 Allocatable CPU/memory、Ready 和 Unschedulable；Pod 提供容器资源、init 资源、
+nodeName 和 phase。CPU 单位是毫核，1000=一个核；memory 是字节。</p>
+<p>读 Pod/Node List，GET 当前 Pod，通过 POST <code>/binding</code> 携带目标 Node 与 Pod UID/RV。
+公开资源字段和错误处理见 <a href="../docs/contracts/scheduler.html">调度契约</a>。只运行一个 scheduler
+进程、一个调度 worker；所有写入仍使用公开 HTTP 接口。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="先计算-pod-请求">先计算 Pod 请求</h3>
+<p>应用容器同时运行，各项资源求和；init 顺序运行，每项资源取最大值。</p>
+<pre><code class="language-text">Pod.CPU    = max(sum(app.CPU), max(init.CPU))
+Pod.Memory = max(sum(app.Memory), max(init.Memory))
+</code></pre>
+<p>例如应用 CPU 为 100+200，init CPU 为 500，Pod CPU 请求是 500。CPU 与 memory 分别计算，
+它们的峰值可以来自不同 init。相加溢出时使用安全的饱和/拒绝策略，避免变成负数。</p>
+<h3 id="过滤与评分">过滤与评分</h3>
+<p>List 已绑定、非 Succeeded/Failed 的 Pod，把请求加到所属节点的 used。对每个 Node：</p>
+<ol>
+<li>Ready=True，未禁调度，CPU/memory Allocatable 都为正。</li>
+<li>used 不超过容量；<code>free=allocatable-used</code> 满足新 Pod 请求。</li>
+<li>按原文计算已用百分比，取整数：</li>
+</ol>
+<pre><code class="language-text">cpuUtil = floor(usedCPU * 100 / allocatableCPU)
+memUtil = floor(usedMemory * 100 / allocatableMemory)
+score = floor((200 - cpuUtil - memUtil) / 2)
+</code></pre>
+<p>最高分优先，同分按节点名升序。比例乘法要防溢出。10 核节点已用 5 核，而 1 核节点全空，
+两者都能容纳新请求时，后者更空闲；比较绝对剩余 CPU 会得到不同结果。</p>
+<h3 id="账本与绑定">账本与绑定</h3>
+<p>一个 worker 每次决定前都从 API List 重建用量，然后绑定。上一轮确认的绑定已进入 API，
+下一轮即使缓存事件还没到，也会计入资源。它替代了原文的本地 Assume 预占账本，减少两套
+状态同步的复杂度；代价是每次决策多读列表。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>在候选选择与绑定之间，Pod 可能被修改或删除；绑定携带 UID/RV，失败后重读。
+请求响应丢失时，下轮先检查是否已绑定。已提交的分配应继续占资源，不能因没收到响应
+就在本地释放并再分配一次。</p>
+<p>Pod/Node Informer 首次同步后才开始 worker。事件把未绑定任务入队，资源不足也保留
+重试；其他 Pod 删除或终止、Node Ready/容量变化都可再次触发检查。使用队列退避，退出
+取消 Watch 与 HTTP 请求。</p>
+<p>Node 与 Pod 不在同一事务中，容量、Ready 和绑定之间仍有快照时差。本课程不保证多个
+scheduler 并行决策时的资源预留；单 worker 是本章算法的运行条件。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>真实调度还涉及插件、亲和性、污点容忍、抢占、拓扑等，本章保留资源过滤和简单比例评分。
+手工写 nodeName 的请求由提交方负责资源约束；scheduler 不拦截这种指定。</p>
+<p>本课程不实现心跳过期驱逐或节点硬故障迁移。Ready 由 kubelet 报告，应用是否健康也不由
+调度器判断；后面的执行模块负责进程状态。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>任务</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S1 纯计算</td>
+<td>Requests、used/free、Filter/Score</td>
+<td>固定输入能手算候选与结果</td>
+</tr>
+<tr>
+<td>S2 HTTP 分配</td>
+<td>GET/List、UID/RV 绑定</td>
+<td>同一 Pod 只发生有效绑定一次</td>
+</tr>
+<tr>
+<td>S3 事件接线</td>
+<td>等同步、入队、失败退避</td>
+<td>删除/终止或节点变化唤醒等待项</td>
+</tr>
+<tr>
+<td>S4 重启/未知响应</td>
+<td>从 API 重建用量</td>
+<td>已确认或已提交分配继续占资源</td>
+</tr>
+<tr>
+<td>S5 真实节点</td>
+<td>接入 kubelet</td>
+<td>两个大请求分散到两个节点并实际运行</td>
+</tr>
+</tbody>
+</table></div>
+<p>先单测函数，再用只有 API/scheduler 的环境检查对象变化。最后接真实节点；三个层次的结果
+分别记录，避免用绑定成功代替容器运行结果。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>参考的普通用户态检查会自动启动临时 API/scheduler：</p>
+<pre><code class="language-bash">python3 reference/scripts/verify-s01.py --output /tmp/opencode/course-scheduler-new
+(cd reference &amp;&amp; go test -race -count=1 ./internal/scheduler)
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>输入与条件</th>
+<th>应断言的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>未 Ready、禁调度、零容量</td>
+<td>不参与候选</td>
+</tr>
+<tr>
+<td>应用和 init 的资源峰值</td>
+<td>采用上述 max 规则，超额请求不绑定</td>
+</tr>
+<tr>
+<td>多个 Pod 竞争同一容量</td>
+<td>成功数量受限，后来的保持等待</td>
+</tr>
+<tr>
+<td>删除/终止占用 Pod</td>
+<td>等待项获得可用资源</td>
+</tr>
+<tr>
+<td>异构节点已用比例不同</td>
+<td>按比例而非绝对剩余量选择</td>
+</tr>
+<tr>
+<td>绑定成功但响应丢失</td>
+<td>下轮观察已绑定，不超配</td>
+</tr>
+<tr>
+<td>相同 key 重复事件、进程重启</td>
+<td>分配稳定，用量从 API 恢复</td>
+</tr>
+<tr>
+<td>两台 2000 毫核节点、两个 1500 毫核 Pod</td>
+<td>分别绑定并运行在两节点</td>
+</tr>
+</tbody>
+</table></div>
+<p>最后一项由 <a href="10-integration.html">双节点集成</a> 的获批 VM 验证，记录为 real-two-node-scheduling。
+其他样本及日志见 <a href="../docs/progress/ALIGNMENT.html">对齐验收</a>。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>打印 need、allocatable、used、free、score 和绑定前 RV。资源看起来足够却不调度时，先查
+Ready/Unschedulable，再查 init 峰值。多调度了一个时，检查上一轮绑定是否在本轮 List 中。</p>
+<p>只用缓存计数却不处理观察延迟，会低估已提交分配。用很大的整数样本检查乘加，负 used/free
+通常是溢出或终止对象过滤错误。409 要重读，不要原封不动无限提交同一旧对象。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §12、SCHED 类订正；<a href="../docs/contracts/scheduler.html">调度契约</a>。</li>
+<li>资源计算、已丢失响应绑定等实验证据见 <a href="../docs/progress/C01-S01.html">C01/S01</a>。</li>
+<li>下一步：<a href="06-kubelet-runtime.html">06 Kubelet/Runtime</a>，根据 nodeName 执行 Pod，并报告实际运行结果。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

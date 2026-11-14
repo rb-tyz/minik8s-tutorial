@@ -1,0 +1,141 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>10 把组件接成一个 MVP · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="10-把组件接成一个-mvp">10 把组件接成一个 MVP</h1>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>完成 Deployment→RS→Pod→调度→CRI/CNI→Endpoints→Service，运行两个网站副本，滚动到
+新版，再经历组件重启并回收资源。需要已通过各模块的局部检查；公开契约是集成时的共同输入。</p>
+<p>先看 <a href="00-map-and-lab.html">系统导图</a>。如果某个模块尚未写完，可以用参考组件提供其 HTTP
+或 CRI 依赖，再换回自己的实现。编排逻辑围绕同一套对象/版本接口协作。</p>
+<h2 id="2-进程与环境">2. 进程与环境</h2>
+<p>控制面各一个 API Server、scheduler、controller-manager；每节点一个 kubelet、proxy。
+KV 内嵌于 API。节点准备 containerd/runc、crictl v1.29.0、CNI 0.4.0 与 Linux 网络工具。
+单节点环境与启动命令见 <a href="labs/environment.html">环境练习</a>，CRI 调用见 <a href="labs/cri.html">CRI 练习</a>。
+参考环境为 Debian 12、cgroup v2、iptables nf_tables；特权操作全部在核对 UUID 的可销毁 KVM。</p>
+<h2 id="3-自动复现入口">3. 自动复现入口</h2>
+<p>先按 <a href="../docs/VM-EXPERIMENTS.html">VM 输入下载与校验</a> 准备 LAB、IMAGE_SHA512、CRI_SHA256。
+从仓库根目录运行（输出路径每次换新）：</p>
+<pre><code class="language-bash">python3 reference/tests/vm/run.py \
+  --image "$LAB/base.qcow2" --sha512 "$IMAGE_SHA512" \
+  --crictl "$LAB/crictl.tar.gz" --crictl-sha256 "$CRI_SHA256" \
+  --two-node --output /tmp/opencode/course-mvp-new
+</code></pre>
+<p>runner 构建普通文件，创建两台新 KVM，核对身份、安装工具、通过公开 API 驱动真实容器，
+保存 guest/cluster/peer 记录，最后停 VM 并删除磁盘/seed/key。下载输入由调用者另行删除。
+只验证单节点 Pod 网络时将 --two-node 换成 --pod-network。若 guest 需要代理，按环境记录
+添加 --apt-proxy；缺少网络依赖应记录安装失败。</p>
+<p>这套设施包含参考组件的启动参数与自有资源查询；采用其他实现时改启动适配器，公开 Bash
+grader 的请求保持不变。实验镜像与 VM 生命周期作为环境设施提供，无需在 MiniK8s 内实现。</p>
+<h2 id="4-按依赖启动并观察">4. 按依赖启动并观察</h2>
+<p>顺序是 API→节点网络配置/运行时→kubelet→等待 Node Ready→scheduler/controller-manager/proxy。
+API 的持久路径只由它独占；重启继续使用原文件。各进程保存 stdout/stderr 并设置启动期限。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>观察点</th>
+<th>下一步所需状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Node List</td>
+<td>Ready=True、正 Allocatable、不同节点名</td>
+</tr>
+<tr>
+<td>API List/Watch</td>
+<td>有效快照 RV，可从该 RV 续接</td>
+</tr>
+<tr>
+<td>kubelet</td>
+<td>能查询 CRI；Pod 模式 NetworkReady=True</td>
+</tr>
+<tr>
+<td>proxy</td>
+<td>能取得 Service/Endpoints；全群只有一个 VIP 分配者</td>
+</tr>
+</tbody>
+</table></div>
+<p>手工用自己的进程启动时依次做这些检查，避免把依赖没启动误判为当前模块算法错误。</p>
+<h2 id="5-创建补副本与实际访问">5. 创建、补副本与实际访问</h2>
+<p>逐条命令与 JSON 在 <a href="labs/workloads.html">工作负载实验 W1–W3</a>：</p>
+<ol>
+<li>提交 <span class="local-artifact" title="本地工程附件：tutorial/examples/pod.json">Pod（本地工程附件）</span>，等待 nodeName/Running/PodIP，实际 GET PodIP:8080。</li>
+<li>提交 <span class="local-artifact" title="本地工程附件：tutorial/examples/replicaset.json">RS（本地工程附件）</span>，确认两个自有 Running Pod；删除一个后，以新 UID 补齐。</li>
+<li>提交 <span class="local-artifact" title="本地工程附件：tutorial/examples/deployment.json">Deployment（本地工程附件）</span> 与 <span class="local-artifact" title="本地工程附件：tutorial/examples/service.json">Service（本地工程附件）</span>。</li>
+<li>依次检查 RS、两个 Pod、Endpoints 的 target UID/8080、Service VIP/80，读取 version-one。</li>
+</ol>
+<p>把每一跳的 UID/RV 保存下来。例如 Service 创建响应中尚无 VIP 时继续轮询；Pod Running 后
+应用还可能正在监听端口，实际 HTTP 成功单独等待。Ready 与连接可达各有观察条件。</p>
+<h2 id="6-滚动更新与算法观察">6. 滚动更新与算法观察</h2>
+<p>W4 用当前 RV 的 Merge PATCH 替换完整 containers 数组，把 POD_MARK 改为 version-two。
+Deployment 检测 template 摘要变化，创建新版 RS，按 N=2、surge=1、unavailable=0 调整。
+每次只改一个 RS，等待其 status 观察申请数后再继续。状态变化与预算算法见第 08 章。</p>
+<p>保存滚动中的新旧 RS spec/status、Pod UID 与响应。结束条件是新版的两个 Pod Running、
+Endpoints 恰好引用它们、VIP 仍保持原地址，多次新连接都读到 version-two。旧 status 数字
+可能暂时等于目标，比较模板与 UID 能识别它属于哪一版。</p>
+<h2 id="7-跨节点与服务转发">7. 跨节点与服务转发</h2>
+<p>两节点使用不同 PodCIDR，guest 静态路由连接对端网段。两个 1500 毫核 Pod 在两台 2000
+毫核节点上实际调度；分别从 Pod 内请求对端 PodIP，再从两侧访问同一 VIP，采样到两个后端。
+数据路径、路由命令和 VIP 单写者条件见第 09 章。多个 Service 的 VIP 应各不相同。</p>
+<p>服务的概率选择发生在新连接。fixture /fetch 关闭连接复用；客户端也用短连接采样。
+滚动期间记录请求错误；最终后端和规则在公布期限内收敛。现有连接按 conntrack 映射处理。</p>
+<h2 id="8-故障恢复与回收">8. 故障、恢复与回收</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>实验</th>
+<th>保留/比较的证据</th>
+<th>期望</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>kubelet 重启</td>
+<td>Pod UID、sandbox/container ID</td>
+<td>接管原进程</td>
+</tr>
+<tr>
+<td>controller-manager 重启</td>
+<td>RS owner UID、Pod 集合</td>
+<td>副本稳定，后续缩扩容仍工作</td>
+</tr>
+<tr>
+<td>proxy 重启/后端删除</td>
+<td>VIP、Endpoints UID、HTTP</td>
+<td>VIP 保持，后端规则收敛</td>
+</tr>
+<tr>
+<td>API 短暂中断</td>
+<td>已运行容器、VIP 请求、恢复游标</td>
+<td>数据路径继续工作，控制循环恢复</td>
+</tr>
+<tr>
+<td>新镜像仓库先失败再恢复</td>
+<td>RuntimeError、registry 请求、镜像独有文件</td>
+<td>失败可观察，恢复后实际拉取并运行</td>
+</tr>
+<tr>
+<td>删除工作负载</td>
+<td>API、CRI、IPAM、NAT</td>
+<td>自有对象和运行资源回收</td>
+</tr>
+</tbody>
+</table></div>
+<p>W5 给出操作顺序。完整的故障注入与断言在 runner 中，每步有超时；故障条件与运行记录见
+<a href="../docs/progress/ALIGNMENT.html">对齐验收</a>。本阶段沿用该实现版本的真实实验记录。</p>
+<h2 id="9-失败时从哪一跳查起">9. 失败时从哪一跳查起</h2>
+<p>先查 API 对象是否创建，再查 owner/selector、nodeName、RuntimeError、CRI 状态与网络。
+PodIP 成功而 VIP 失败时查 Endpoints 的 UID/端口，再查 proxy 日志与规则。API 断线时避免
+把读取失败当空列表；规则和运行容器按原状态保留，读取成功后再收敛。</p>
+<p>收集输入、版本、日志、CRI 状态、地址路由/NAT，失败输出保存原目录；修复后用新目录重跑。
+清理失败也算失败，先保留 ID/UUID，再按创建记录回收。</p>
+<h2 id="10-最终检查与资料">10. 最终检查与资料</h2>
+<p>公开检查入口：</p>
+<pre><code class="language-bash"># 在获批 guest 内，API/VM_UUID 来自本次环境
+bash grader/grade.sh --url "$API" --case all --vm-id "$VM_UUID" --output /tmp/course-grade-new
+# 双节点环境另执行
+bash grader/grade.sh --url "$API" --case cross-node --vm-id "$VM_UUID" --output /tmp/course-cross-new
+</code></pre>
+<p>all 覆盖单节点七项主流程，cross-node 另验双向 PodIP/两侧 VIP。hook 接口见
+<a href="../grader/README.html">grader 说明</a>，其测试意图逐项对应各章。</p>
+<p>本章范围来自原文 §18 集成及 §14.4 静态路由；课程机制对应
+<a href="../docs/MVP-SCOPE.html">教学范围</a>。已有真实结果为 43 项单节点和 13 项双节点断言通过。
+最后按 <a href="11-independent-validation.html">第 11 章</a> 对照教程、契约与实验，再查看
+<a href="../docs/progress/STAGE3.html">第三阶段交付记录</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

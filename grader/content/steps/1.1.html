@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 1.1：启动任务并取得退出码 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-11启动任务并取得退出码">Stage 1.1：启动任务并取得退出码</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>处理一条执行请求，运行提供的测试程序，并回复真实退出码。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>测试器会把你编译的程序作为一个长期运行的子进程启动。例如：</p>
+<pre><code class="language-text">./bin/my-minik8s /tmp/course-run/work/driver
+</code></pre>
+<p><code>./bin/my-minik8s</code> 是你的程序；后面的路径是测试器分配给这一轮的工作目录，在 Go 中通过
+<code>os.Args[1]</code> 读取。测试器把一行 JSON 写进你的标准输入（stdin），你的程序处理后向标准输出
+（stdout）写一行 JSON。调试日志写到标准错误（stderr）。接入选项 <code>--driver</code> 指向的就是这个程序。</p>
+<p>本小节的正式提交在获批的实验 KVM 内执行。测试程序与目录的准备见
+<a href="../../docs/FIRST-SUBMISSION.html">从空 main 到第一次提交</a>。</p>
+<h2 id="先认识测试程序">先认识测试程序</h2>
+<p>课程提供一个很小的程序，源码在 <code>grader/fixtures/process.go</code>。fixture 在这里表示“供测试使用的
+固定程序”。它可以按命令行参数退出、暂停或提供 HTTP 响应，你不用把它的功能写进自己的 main。</p>
+<p>假设提供的目录是 <code>/tmp/minik8s-lab/rootfs</code>，实际文件就是：</p>
+<pre><code class="language-text">/tmp/minik8s-lab/rootfs/fixture
+</code></pre>
+<p><code>rootfs</code> 表示准备作为容器根目录的文件夹。后续把它设置为容器的 <code>/</code> 后，同一个文件在容器里
+就叫 <code>/fixture</code>。1.1 先练习启动进程并取得退出码，可以按传入的 rootfs 找到该文件；根目录和
+PID 隔离从 1.2 开始验收。</p>
+<h2 id="测试器会发什么">测试器会发什么</h2>
+<p>第一条消息如下；路径和标记在正式测试中由本轮环境生成：</p>
+<pre><code class="language-json">{"op":"container-run","rootfs":"/tmp/minik8s-lab/rootfs","args":["exit","42"],"nonce":"run-a","resources":{"cpu":50,"memory":67108864,"pids":512},"wait":true}
+</code></pre>
+<p><code>op</code> 是操作名称。<code>container-run</code> 约定你的程序启动一次任务。<code>args</code> 是传给 fixture 的参数，
+这里要求运行 <code>fixture exit 42</code>。<code>wait:true</code> 要求等待它结束，再返回结果。<code>nonce</code> 是本轮标记，
+<code>resources</code> 是后续资源限制阶段使用的配置；本阶段检查启动、等待和退出码。</p>
+<p>fixture 的 <code>exit 42</code> 模式调用 <code>os.Exit(42)</code>。因此预期响应是：</p>
+<pre><code class="language-json">{"ok":true,"exitCode":42}
+</code></pre>
+<p><code>ok:true</code> 表示执行和等待这次请求已经完成；<code>exitCode</code> 是子任务的结果。你的父程序还要继续
+读取请求。测试器接着发送以下两条消息：</p>
+<pre><code class="language-json">{"op":"reset"}
+{"op":"close"}
+</code></pre>
+<p>reset 要清理本轮创建的任务，完成后回复 <code>{"ok":true}</code>。close 要清理并结束你的程序，父程序
+退出码应为 0；测试器不会再等待它的消息响应。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>在 main 中循环读取 stdin，每次解析一行 JSON，再按 op 分派处理。启动任务可以从 Go 的
+<code>os/exec</code> 开始：根据 rootfs 和 <code>fixture</code> 拼出实际路径，将 args 作为参数，启动并等待。
+读取子任务的退出码后编码成单行 JSON。子程序非零退出时，<code>Wait</code> 会返回错误，其中仍携带
+实际退出码；把这个结果传回来，父程序继续处理 reset 与 close。</p>
+<p>先按 <a href="../../docs/FIRST-SUBMISSION.html">第一次提交的准备步骤</a> 编译自己的程序和 fixture，
+在终端手动输入上面的消息，确认能完成一次对话，再运行正式提交。</p>
+<p><a href="../stages/01-containers.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>CONTAINER-EXIT</code>：任务退出后返回 exitCode=42，reset 能结束本次资源。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 1.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

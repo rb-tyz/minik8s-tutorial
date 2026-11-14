@@ -1,0 +1,68 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第一阶段交付说明 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="第一阶段交付说明">第一阶段交付说明</h1>
+<p>本阶段将原教程转成了可追溯的工程审计：逐章分析、稳定问题编号、修正方案、运行证据、官方依据和第二阶段任务。主报告为 <a href="AUDIT.html">AUDIT.md</a>，独立清单为 <a href="ERRORS.html">ERRORS.md</a>，最终结果为 <a href="ACCEPTANCE.html">ACCEPTANCE.md</a>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>AGENTS.md 第一阶段要求</th>
+<th>交付位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>完整逐章阅读与架构分析</td>
+<td>AUDIT.md 的 24 章覆盖、进程图和接口表</td>
+</tr>
+<tr>
+<td>List/Watch、Revision/CAS、持久化恢复</td>
+<td>AUDIT.md 的 KV/API 分析；KV/API/WATCH 记录与运行测试；原文缺失的持久化实现列为第二阶段任务</td>
+</tr>
+<tr>
+<td>Informer 生命周期、断线与重同步</td>
+<td>INFORMER 记录、普通测试与独立竞态探针</td>
+</tr>
+<tr>
+<td>WorkQueue 去重、重试和退出</td>
+<td>QUEUE 记录与 Go 测试；正常 dirty 重排已改判</td>
+</tr>
+<tr>
+<td>调度资源、预留和绑定</td>
+<td>SCHED 记录与辅助 cache 边界；预留指 Assume/Reserve，原文排除的抢占式 Preemption 保持后续范围说明</td>
+</tr>
+<tr>
+<td>Kubelet/Runtime 协调</td>
+<td>KUBELET/RUNTIME/PROTO 记录、真实 runc 与 containerd CRI</td>
+</tr>
+<tr>
+<td>Namespace/cgroup/runc/CNI</td>
+<td>guest 断言、helper 来源标记与固定 OCI/CNI 规范</td>
+</tr>
+<tr>
+<td>Service/iptables 实际行为</td>
+<td>nft/legacy、hairpin、多端口、双 VM 静态路由和 SNAT</td>
+</tr>
+<tr>
+<td>独立进程通信接口</td>
+<td>AUDIT.md 接口表及第二阶段 API/CRI/CNI 契约任务</td>
+</tr>
+<tr>
+<td>每项位置、原因、触发、复现、修复、影响与状态</td>
+<td>records.json 生成的 ERRORS.md；原 100 个 ID 保留，新增 CNI-009/010</td>
+</tr>
+<tr>
+<td>原文错误、简化、疑点区分</td>
+<td>STATS.md 分类与证据状态；七条撤回记录；experiments.json 六项结项</td>
+</tr>
+<tr>
+<td>官方实现/协议研究</td>
+<td>research/SOURCES.txt、固定 tag/commit、校验和与来源比较器</td>
+</tr>
+<tr>
+<td>后续实现计划</td>
+<td>AUDIT.md 的模块顺序和逐检查点验收要求</td>
+</tr>
+</tbody>
+</table></div>
+<p>日常复核使用 <code>bash audit/evidence/verify.sh</code>。它创建新的输出目录，逐检查点记录退出码，预期失败检查需要匹配具体诊断。<code>python3 audit/check_delivery.py</code> 复核当前记录、章节、日志结论、清理和文档链接。</p>
+<p><code>python3 audit/package.py</code> 生成 <code>dist/minik8s-stage1-audit.tar.gz</code> 及 SHA-256 文件。归档含所有阶段文档、转录/测试、VM 复现脚本、正式及历史证据；内含 MANIFEST.sha256。大镜像、二进制工具、私人 SSH key 和运行磁盘均位于任务临时目录，已回收。</p>
+<p>迁移验收方法：在新临时目录解压，检查 MANIFEST.sha256，然后从另一工作目录以绝对路径调用包内 verify.sh；执行 check_delivery.py。结果保存在 dist/package-acceptance.json 及 dist/relocated-user-space/，分发主体为 tar.gz 与其 SHA-256 文件。</p>
+<p>后续阶段交付独立的 Go 参考实现、最终教程和 Bash 黑盒测试器。当前审计的适配器用于复现局部机制，类型、helper 和 fake client 假设均在逐项记录中保留，便于实施时选择正确契约。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

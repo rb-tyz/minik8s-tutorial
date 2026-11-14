@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 10.2：区分多个 TCP 端口 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-102区分多个-tcp-端口">Stage 10.2：区分多个 TCP 端口</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>让一个 Service 的两个 TCP 端口分别到达指定应用端口。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本小节实现 Service Proxy。Service 给一组 Pod 提供固定的虚拟 IP（ClusterIP）；Endpoints
+列出当前可用的 Pod 地址和端口。Proxy 读取这两种对象，在节点上维护转发规则。</p>
+<p>测试器调用 <code>start all 数据目录</code>，由脚本启动 API、kubelet、scheduler、控制器和 Proxy。
+随后它创建对象、等待真实容器就绪，再向 Pod IP 或 Service IP 发送请求。本节在实验 KVM 内运行。
+本文地址用于展示数据关系，程序按实际对象中的地址和端口生成规则。</p>
+<h2 id="同一个-ip-的不同端口">同一个 IP 的不同端口</h2>
+<p>测试器在一个 Pod 中启动两个 HTTP 程序：8080 返回 first，8081 返回 second。Service 配置
+18080→first、18081→second，两个目标都是端口名。</p>
+<pre><code class="language-text">Service-IP:18080 → Pod-IP:8080 → first
+Service-IP:18081 → Pod-IP:8081 → second
+</code></pre>
+<p>测试分别请求两个入口，要求正文对应。一个 Service 可以提供多个端口，每条端口声明都要
+独立参与匹配和目标解析。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>把 Service 身份、协议、入口端口组合为转发规则的身份，再分别查找目标端口。
+沿用上一阶段的地址分配和更新逻辑。</p>
+<p><a href="../stages/10-service-proxy.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>PROXY-MULTIPORT</code>：两个入口分别得到 first 与 second。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 10.2
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

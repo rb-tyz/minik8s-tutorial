@@ -1,0 +1,34 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.6：在 init 与应用间共享目录 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-66在-init-与应用间共享目录">Stage 6.6：在 init 与应用间共享目录</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>准备 hostPath 卷，让 init 写文件、应用读取同一文件。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本阶段实现 kubelet，也就是在一个节点上负责运行 Pod 的组件。Pod 是对“运行哪些容器”的描述：
+<code>spec</code> 保存期望配置，<code>status</code> 保存观察结果。kubelet 读取分配给本节点的 Pod，调用前两节的
+运行时接口，再把结果写回 API。</p>
+<p>测试器调用 <code>./test-hooks/start node /tmp/course-run/work/lifecycle</code>，由你的脚本启动 API 和
+kubelet。随后它创建已经填写 <code>spec.nodeName</code> 的 Pod，并等待结果。这里使用节点网络，Pod 网络
+在第九小节实现。本节在实验 KVM 内运行，测试程序和镜像由实验环境准备。</p>
+<h2 id="同一个目录的两个路径">同一个目录的两个路径</h2>
+<p>卷把一个目录提供给容器使用。hostPath 指实验 VM 节点上的目录，mountPath 指它在容器里
+出现的位置。测试会准备本轮目录，并配置：</p>
+<pre><code class="language-json">{"volumes":[{"name":"data","hostPath":{"path":"/tmp/course-run/work/volume","type":"Directory"}}]}
+</code></pre>
+<p>init 与应用都用 volumeMounts 的 name=data 关联到它，mountPath=/work。于是容器内
+<code>/work/initialized</code> 对应 VM 的 <code>/tmp/course-run/work/volume/initialized</code>。</p>
+<p>init 执行 <code>["write","/work/initialized","done"]</code>，成功后应用执行
+<code>["require","/work/initialized","done"]</code> 并持续运行。测试要求 init 成功、应用 Running，
+且 VM 目录中的实际文件内容为 done。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>先按 volumes 和 volumeMounts 的名称配对，在启动对应容器前准备挂载。两个容器使用同一个
+节点目录，init 完成后再启动应用。这里使用已有目录，不涉及额外的存储服务。</p>
+<p><a href="../stages/06-kubelet.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>NODE-SHARED</code>：应用读取到 init 写下的 done，实际共享目录中也有该文件。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 6.6
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,38 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 9.1：为 Pod 配置地址与路由 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-91为-pod-配置地址与路由">Stage 9.1：为 Pod 配置地址与路由</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>执行 CNI ADD，把 veth 接到 bridge，配置 Pod 地址和默认路由。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>CNI 是运行时为容器配置网络的调用约定。本节需要一个可执行网络程序，用 <code>--cni</code> 指定。
+它每次处理一次调用：从环境变量读取操作类型和目标，从 stdin 读取一份配置 JSON，完成后退出。
+这与前三节持续读取多行请求的程序不同。</p>
+<p>测试器会在实验 KVM 内创建本轮独占的网络 namespace（一套独立网络视图），把它的路径放进
+<code>CNI_NETNS</code>，接口名称放进 <code>CNI_IFNAME</code>，容器身份放进 <code>CNI_CONTAINERID</code>。诊断写 stderr；
+ADD 成功时 stdout 返回 CNI JSON 结果，成功退出码为 0。字段例子见
+<a href="../../docs/ADAPTER.html#cni-%E5%92%8C%E6%B5%8B%E8%AF%95%E4%BE%9D%E8%B5%96">CNI 调用</a>。</p>
+<h2 id="看一次-add-调用">看一次 ADD 调用</h2>
+<p>环境变量和 stdin 分开提供输入。例如测试器给出 CNI_COMMAND=ADD、CNI_CONTAINERID=pod-a、
+CNI_NETNS=/run/netns/pod-a、CNI_IFNAME=eth0，stdin 中是：</p>
+<pre><code class="language-json">{"cniVersion":"0.4.0","name":"course-net","type":"mini-cni","bridge":"course-br","vmID":"本次实验VM的UUID","ipam":{"subnet":"10.249.4.0/29","stateFile":"/tmp/course-run/ipam.json"}}
+</code></pre>
+<p>bridge 是本轮网桥名；subnet 是可分配网段；stateFile 是给地址记录使用的文件路径；vmID
+应取自已批准的 VM 创建记录。上面名称是示例，正式调用使用测试器传入的值。</p>
+<p>成功响应的相关字段例如：</p>
+<pre><code class="language-json">{"cniVersion":"0.4.0","ips":[{"version":"4","address":"10.249.4.2/29","gateway":"10.249.4.1"}]}
+</code></pre>
+<p>测试器还会读取实际 eth0 地址与默认路由。IP 是给网络接口配置的地址，默认路由表示
+访问其他网段时经哪个网关发出。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>创建或复用本轮 bridge，创建一对 veth 虚拟网线，一端放进目标 namespace 并命名 eth0，
+另一端接到 bridge。设置地址、网关和接口状态，再返回对应结果。本项由实验设施回收它
+独占的 namespace/bridge；地址管理和重复删除在后续阶段逐项验收。</p>
+<p><a href="../stages/09-cni.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>CNI-ADD</code>：实际 eth0 有分配地址，默认路由存在。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 9.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

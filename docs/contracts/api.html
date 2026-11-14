@@ -1,0 +1,761 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>API 契约（A01 + A02：对象模型、CRUD/List、Watch、/status、/binding） · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="api-契约a01--a02对象模型crudlistwatchstatusbinding">API 契约（A01 + A02：对象模型、CRUD/List、Watch、/status、/binding）</h1>
+<p>A01 在 K02 的 <code>internal/kv</code> 上提供 MiniK8s 的公共对象模型、HTTP CRUD/List 和 Go
+客户端。A02 增加流式 Watch、<code>/status</code> 与 <code>/binding</code>。API Server 嵌入 KV，没有独立
+存储进程。本文件描述当前实际实现，A01 阶段已明确标注的“A02 尚未实现”段落已被
+下方真实语义替换。</p>
+<h2 id="包与进程">包与进程</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>包</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>internal/api</code></td>
+<td>类型、default/validation、HTTP 路由与 handler、<code>Status</code> 错误体</td>
+</tr>
+<tr>
+<td><code>internal/client</code></td>
+<td>基于 <code>net/http</code> 的客户端，所有组件共用</td>
+</tr>
+<tr>
+<td><code>cmd/mini-apiserver</code></td>
+<td>打开 KV、监听 TCP、信号退出、关闭 KV</td>
+</tr>
+</tbody>
+</table></div>
+<pre><code class="language-go">func api.New(store *kv.Store) *api.Server
+func api.NewWithOptions(store *kv.Store, opts api.Options) *api.Server
+func (s *api.Server) Handler() http.Handler   // Server 本身也实现 ServeHTTP
+
+type api.Options struct {
+    Now              func() time.Time // 测试用；默认 time.Now
+    NewUID           func() string    // 测试用；默认 random UUIDv4
+    MaxBodyBytes     int64            // 默认 4 MiB（等于 KV 单记录上限）
+    BookmarkInterval time.Duration    // 0=30s；负数=关闭周期性 bookmark
+}
+
+func (s *api.Server) Shutdown() // 结束活跃 watch 流；不关闭 store
+</code></pre>
+<p><code>New</code> 不接管 <code>store</code> 的所有权；调用方负责在 HTTP 服务停止后 <code>Close</code>。cmd 的顺序是
+<code>api.Server.Shutdown</code>（结束 watch 流）→ <code>http.Server.Shutdown</code> → 等 <code>Serve</code> 返回 →
+<code>Close</code>。<code>mini-apiserver</code> 参数：</p>
+<pre><code class="language-text">mini-apiserver --listen 127.0.0.1:8080 --data /var/lib/minik8s/apiserver.kvlog
+</code></pre>
+<p><code>--listen</code> 支持端口 0，实际地址写入日志（<code>listening on http://...</code>）。进程处理
+SIGINT/SIGTERM，10 秒优雅退出；<code>http.Server</code> 设置 ReadHeader/Read/Write/Idle 超时。
+Watch handler 用 <code>http.NewResponseController</code> 只为该请求清除写期限，并在每帧写前
+设置 30 秒单帧写期限；全局 <code>WriteTimeout=60s</code> 继续约束普通请求。ReadTimeout 只在
+读请求体/头部时生效，不影响已建立的长 GET；<code>TestWatchOutlivesServerReadAndWriteTimeouts</code>
+用 60ms 的服务器超时验证。</p>
+<p><code>api.Server.Shutdown</code> 关闭内部 stop channel，活跃 watch 在下一个 select 立刻返回。
+cmd 必须在 <code>http.Server.Shutdown</code> 之前调用它；否则等待活跃 handler 会一直阻塞到
+shutdown 超时。测试 <code>TestWatchShutdownEndsActiveStream</code>、<code>TestServeShutsDownWithActiveWatch</code>
+固定这一行为。</p>
+<h2 id="对象">对象</h2>
+<p>全部对象都使用 <code>apiVersion</code>/<code>kind</code>/<code>metadata</code>，需要时带 <code>spec</code>/<code>status</code>。列表类型
+额外有 <code>metadata.resourceVersion</code> 与 <code>items</code>。字段集合以“后续模块真的会用”为准，
+保留核心语义，不追求完整 Kubernetes API 的字段覆盖。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>资源</th>
+<th>apiVersion</th>
+<th>Kind</th>
+<th>作用域</th>
+<th>Spec/Status 关键字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pods</td>
+<td><code>v1</code></td>
+<td>Pod</td>
+<td>namespaced</td>
+<td>containers、initContainers、restartPolicy、nodeName、volumes(hostPath)、container resources；status: phase、podIP、containerStatuses</td>
+</tr>
+<tr>
+<td>nodes</td>
+<td><code>v1</code></td>
+<td>Node</td>
+<td>cluster</td>
+<td>spec.podCIDR、spec.unschedulable；status: capacity、allocatable、conditions、addresses</td>
+</tr>
+<tr>
+<td>services</td>
+<td><code>v1</code></td>
+<td>Service</td>
+<td>namespaced</td>
+<td>selector、ports(name/port/targetPort/protocol)、clusterIP、type</td>
+</tr>
+<tr>
+<td>endpoints</td>
+<td><code>v1</code></td>
+<td>Endpoints</td>
+<td>namespaced</td>
+<td>subsets: addresses/notReadyAddresses/ports</td>
+</tr>
+<tr>
+<td>replicasets</td>
+<td><code>apps/v1</code></td>
+<td>ReplicaSet</td>
+<td>namespaced</td>
+<td>replicas、selector.matchLabels、template；status: replicas/ready/available</td>
+</tr>
+<tr>
+<td>deployments</td>
+<td><code>apps/v1</code></td>
+<td>Deployment</td>
+<td>namespaced</td>
+<td>replicas、selector、template、strategy(maxSurge/maxUnavailable)；status: replicas/updated/ready/available、replicaSetRefs</td>
+</tr>
+</tbody>
+</table></div>
+<p>公共类型：</p>
+<pre><code class="language-go">type TypeMeta struct{ APIVersion, Kind string }
+type ObjectMeta struct {
+    Name, Namespace, UID, ResourceVersion, CreationTimestamp string
+    Labels, Annotations map[string]string
+    OwnerReferences []OwnerReference
+}
+type OwnerReference struct{ APIVersion, Kind, Name, UID string; Controller, BlockOwnerDeletion bool }
+type IntOrString struct{ Type IntOrStringType; IntVal int32; StrVal string } // JSON number 或 string
+
+type Object interface {
+    GetObjectMeta() *ObjectMeta
+    SetObjectMeta(*ObjectMeta)
+    GetTypeMeta() TypeMeta
+    SetTypeMeta(TypeMeta)
+    DeepCopyObject() Object
+}
+type ObjectList interface { SetListMeta(ListMeta); AppendObject(Object) }
+</code></pre>
+<p><code>api.LookupResource(apiVersion, plural)</code>、<code>api.NewObject(...)</code>、<code>api.NewList(...)</code>
+把资源表暴露给客户端与黑盒测试器，避免各处硬编码路由。资源表是六项静态表；加一种
+资源就是加一个条目、一个 List 类型和几个方法，不需要通用 registry 或反射。</p>
+<p><code>DeepCopyObject</code> 通过 JSON 编解码复制，保证返回值、缓存与请求体互不共享 map/slice。
+它只用于拷贝，不参与存储。</p>
+<h3 id="资源数量与单位">资源数量与单位</h3>
+<p>CPU 是毫核（1000 = 1 核），内存是字节；两者都是 <code>int64</code>，<code>ResourceList</code> 同时用于
+requests（Pod）与 capacity/allocatable（Node）。这不是通用 quantity 解析，
+<code>0.5</code> 这类写法不支持，由调用方换算成整数。</p>
+<p><code>TargetPort</code> 与 rollout 的 <code>maxSurge</code>/<code>maxUnavailable</code> 使用 <code>IntOrString</code>，因为
+Kubernetes 同样允许“数字或名字/百分比”，而 <code>string</code> 会让客户端无法区分两者。
+JSON 编码保持原始种类（数字仍是数字，字符串仍是字符串）。</p>
+<h2 id="路由">路由</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/namespaces/{ns}/pods</code></td>
+<td>create</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/namespaces/{ns}/pods</code></td>
+<td>list（namespace）</td>
+</tr>
+<tr>
+<td>GET/PUT/DELETE</td>
+<td><code>/api/v1/namespaces/{ns}/pods/{name}</code></td>
+<td>item</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/pods</code></td>
+<td>list（全部 namespace，只读）</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>&lt;collection&gt;?watch=true</code></td>
+<td>流式 Watch（见下节）</td>
+</tr>
+<tr>
+<td>GET/PUT/PATCH</td>
+<td><code>&lt;item&gt;/status</code></td>
+<td>Pod/Node/ReplicaSet/Deployment</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/namespaces/{ns}/pods/{name}/binding</code></td>
+<td>绑定 Pod 到 Node</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/nodes</code></td>
+<td>create（cluster-scoped）</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/nodes</code></td>
+<td>list</td>
+</tr>
+<tr>
+<td>GET/PUT/DELETE</td>
+<td><code>/api/v1/nodes/{name}</code></td>
+<td>item</td>
+</tr>
+<tr>
+<td>POST/GET/PUT/DELETE</td>
+<td><code>/api/v1/namespaces/{ns}/services[/{name}]</code></td>
+<td>Service</td>
+</tr>
+<tr>
+<td>POST/GET/PUT/DELETE</td>
+<td><code>/api/v1/namespaces/{ns}/endpoints[/{name}]</code></td>
+<td>Endpoints</td>
+</tr>
+<tr>
+<td>POST/GET/PUT/DELETE</td>
+<td><code>/apis/apps/v1/namespaces/{ns}/replicasets[/{name}]</code></td>
+<td>ReplicaSet</td>
+</tr>
+<tr>
+<td>POST/GET/PUT/DELETE</td>
+<td><code>/apis/apps/v1/namespaces/{ns}/deployments[/{name}]</code></td>
+<td>Deployment</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/apis/apps/v1/{replicasets|deployments}</code></td>
+<td>list（全部 namespace）</td>
+</tr>
+</tbody>
+</table></div>
+<p>规则：</p>
+<ul>
+<li>未注册的 group/version/plural、未知子资源、<code>/api/v1</code> 本身、路径中的 <code>.</code>/<code>..</code> 都
+  返回 404 <code>NotFound</code>。</li>
+<li>collection 只接受 GET/POST；item 只接受 GET/PUT/DELETE。其他方法 405
+  <code>MethodNotAllowed</code>，并带 <code>Allow</code> 头。</li>
+<li>全部 namespace 的 collection 是只读的：<code>GET</code> 列表正常，<code>POST</code> 返回 405（带
+  <code>Allow: GET</code>）。namespaced 对象没有全 namespace 的 item 路由。</li>
+<li><code>/status</code> 只存在于有 status 字段的四种资源：Pod、Node、ReplicaSet、Deployment。
+  <code>GET/PUT/PATCH</code> 之外的 verb → 405，<code>Allow: GET, PUT, PATCH</code>。
+  Service 与 Endpoints 没有 status 字段，其 <code>/status</code> 是 404。</li>
+<li><code>/binding</code> 只对 Pod 开放；其他资源的 <code>/binding</code> 是 404。只接受 POST，其他 verb
+  → 405 <code>Allow: POST</code>。</li>
+<li><code>GET &lt;collection&gt;?watch=true|1|...</code> 是流式 Watch（见“Watch”一节）。<code>watch=false</code>、
+  <code>watch=0</code> 或缺省按普通 list 处理。非 GET 方法带 watch 参数 → 405 <code>Allow: GET</code>。</li>
+<li>路径不做大小写折叠，<code>/API/v1/pods</code> 是未知路径。资源名与 namespace 按原值使用，只在
+  格式校验时拒绝非法字符。</li>
+</ul>
+<h2 id="存储键">存储键</h2>
+<pre><code class="language-text">/registry/pods/{namespace}/{name}
+/registry/services/{namespace}/{name}
+/registry/endpoints/{namespace}/{name}
+/registry/replicasets/{namespace}/{name}
+/registry/deployments/{namespace}/{name}
+/registry/nodes/{name}
+</code></pre>
+<p>前缀列表：</p>
+<ul>
+<li>单 namespace：<code>/registry/&lt;plural&gt;/&lt;namespace&gt;/</code></li>
+<li>全部 namespace：<code>/registry/&lt;plural&gt;/</code></li>
+<li>Node：<code>/registry/nodes/</code></li>
+</ul>
+<p>因为名字与 namespace 都通过 DNS-1123 校验（不含 <code>/</code>），前缀匹配不会跨对象。
+KV <code>Range</code> 按 key 字节序返回，所以列表顺序是 namespace 再 name（cluster 资源只有
+name）。A01 不提供分页、label selector、field selector。</p>
+<p>每个请求都从存储字节解码出新的对象，响应编码后即丢弃；Server 不缓存对象，也不把
+同一个 <code>Object</code> 指针交给两个请求。需要在自己的缓存里复制时用 <code>DeepCopyObject</code>。</p>
+<h2 id="resourceversion-契约">resourceVersion 契约</h2>
+<ul>
+<li><strong>item RV</strong>：对象编码时用 <code>Entry.ModRevision</code> 填 <code>metadata.resourceVersion</code>。
+  create/update 的响应、GET、LIST 中的每个 item 都用同一个来源。</li>
+<li><strong>list RV</strong>：<code>metadata.resourceVersion</code> 是 <code>kv.Range</code> 返回的快照 revision，和
+  item RV 不同。空列表也返回当前 revision（全新存储为 <code>"0"</code>）。</li>
+<li>存储的 JSON <strong>不含</strong> <code>resourceVersion</code>。RV 是读出时的投影，不是写入字段；不需要
+  “写回一次让 RV 落地”的二次 Put，也就不会多出 revision 与 watch 事件（API-001）。</li>
+<li>delete 返回被删除前的对象，<code>resourceVersion</code> 是删除前的 <code>ModRevision</code>（与
+  <code>kv.Delete</code> 返回的 Entry 一致）。</li>
+<li>读操作不写存储，因此 GET/LIST 不推进 revision。</li>
+</ul>
+<h2 id="watch">Watch</h2>
+<p><code>GET &lt;collection&gt;?watch=true[&amp;resourceVersion=&lt;rv&gt;]</code> 返回 HTTP 200 的 NDJSON 流：
+每个事件一行，<code>{"type":"...","object":{...}}</code>。响应头在第一个事件之前发出并
+<code>Flush</code>；测试要求 header 在 2 秒内到达（<code>TestWatchDefaultDeliversSnapshotBeforeBookmarkThenLive</code>）。</p>
+<h3 id="resourceversion-三态">resourceVersion 三态</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>查询参数</th>
+<th>KV 模式</th>
+<th>初始帧</th>
+<th>之后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>缺省</td>
+<td>Range + <code>Exact(S)</code></td>
+<td>当前每个匹配对象一条快照 <code>ADDED</code>，随后一条 <code>BOOKMARK</code></td>
+<td>revision 大于快照 S 的事件</td>
+</tr>
+<tr>
+<td><code>resourceVersion=0</code></td>
+<td><code>AnyRevision</code></td>
+<td>保留窗口内的全部原始事件</td>
+<td>live</td>
+</tr>
+<tr>
+<td><code>resourceVersion=N</code>（正整数）</td>
+<td><code>Exact(N)</code></td>
+<td>只重放 <code>Revision &gt; N</code> 的历史事件</td>
+<td>live</td>
+</tr>
+<tr>
+<td>负数、非数字、空值、溢出</td>
+<td>—</td>
+<td>422 <code>Invalid</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>resourceVersion</code> 必须是纯十进制非负整数；<code>-1</code>、<code>abc</code>、<code>1.5</code>、<code>" 1"</code>、
+<code>resourceVersion=</code>（参数存在但为空）都是 422。<code>N &lt; kv.CompactedRevision()</code> 在写
+响应头之前返回 <strong>410</strong> <code>Expired</code>；<code>N == compactRev</code> 合法并从 <code>N+1</code> 继续。
+<code>N &gt; 当前 revision</code> 不报错，等待该 revision 之后的事件（etcd future-revision
+语义）。</p>
+<h3 id="初始化与-bookmark-顺序">初始化与 bookmark 顺序</h3>
+<p>缺省模式的实现顺序固定为：</p>
+<ol>
+<li><code>kv.Range(prefix)</code> 取得一致快照与快照 revision S；</li>
+<li><code>kv.Watch(prefix, kv.Exact(S))</code> 在同一存储锁内注册订阅，保证 S 之后的提交要么
+   在 Exact 重放中、要么在 live 队列中，恰好一次；</li>
+<li>写 200 响应头并 Flush；</li>
+<li>按 <code>ModRevision</code> 升序写完全部快照 <code>ADDED</code>；</li>
+<li>写一条 <code>BOOKMARK</code>，其 <code>object.metadata.resourceVersion == S</code>。这就是初始化结束
+   标记；</li>
+<li>之后才写 Exact 重放或 live 帧。</li>
+</ol>
+<p>因此不会出现“先发快照 RV、后补旧事件”。空集合也会发一条 S=当前 revision 的
+BOOKMARK，客户端用它可以确认初始化完成。若 Range 之后、Watch 注册之前发生压缩，
+导致 <code>Exact(S)</code> 返回 <code>ErrCompacted</code>，handler 会重新 Range 并重试（最多 8 次），
+不会退化为静默丢事件。</p>
+<p>快照 ADDED 与其后 live 事件的 revision 单调不减（快照按 ModRevision 升序且
+≤ S，Exact(S) 从 S+1 开始）。<code>resourceVersion=0</code>/<code>Exact(N)</code> 没有初始化 BOOKMARK，
+因为没有快照批次需要界定。</p>
+<p>每 30 秒（<code>Options.BookmarkInterval</code>）可发一条有序 <code>BOOKMARK</code>，其 RV 等于<strong>已经写
+给该客户端的最大事件 revision</strong>；在没有任何已交付事件时（例如 <code>resourceVersion=0</code>
+且历史为空）不发，避免越过尚未交付的事件。测试通过
+<code>BookmarkInterval=40ms</code> 的 seam 验证，不真等 30 秒。</p>
+<h3 id="帧类型与-rv">帧类型与 RV</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>type</th>
+<th>object</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ADDED</code></td>
+<td>资源对象</td>
+<td>缺省模式的快照对象，或真实创建（<code>PrevRevision==0</code>）</td>
+</tr>
+<tr>
+<td><code>MODIFIED</code></td>
+<td>资源对象</td>
+<td>真实覆盖写（<code>PrevRevision&gt;0</code>）</td>
+</tr>
+<tr>
+<td><code>DELETED</code></td>
+<td>删除前对象</td>
+<td>用事件 <code>PrevValue</code> 还原</td>
+</tr>
+<tr>
+<td><code>BOOKMARK</code></td>
+<td>同类型空对象</td>
+<td>只带 <code>apiVersion/kind/metadata.resourceVersion</code></td>
+</tr>
+<tr>
+<td><code>ERROR</code></td>
+<td><code>v1/Status</code></td>
+<td>流中途错误</td>
+</tr>
+</tbody>
+</table></div>
+<p>对象 <code>metadata.resourceVersion</code> 一律取<strong>事件 revision</strong>（快照 ADDED 取对象
+ModRevision，删除事件取删除提交 revision），复用 <code>decodeStored</code>/<code>writeObject</code> 的
+投影规则，不额外 <code>Put</code>。删除帧保留完整 spec/status；<code>TestWatchDeleteFrameCarriesPreviousObject</code>
+断言 spec 未丢。BOOKMARK 的 object 只有 <code>apiVersion</code>/<code>kind</code>/<code>metadata.resourceVersion</code>，
+没有 name、spec 或 status；客户端应以 RV 为准。</p>
+<h3 id="错误与取消">错误与取消</h3>
+<ul>
+<li>请求 ctx 取消（客户端断开）→ handler 调用 <code>Watch.Cancel</code> 并返回，不写错误帧。</li>
+<li><code>Events</code> 正常关闭（Cancel/Close）→ 结束响应。</li>
+<li><code>Errors</code> 上的 <code>ErrSlowConsumer</code> → 写一条 <code>ERROR</code> 帧，<code>code=503</code>，
+  <code>reason=ServiceUnavailable</code>，随后关闭流。<strong>不是 410</strong>。KV 只断开该订阅者，
+  其他请求与写不受影响（<code>TestWatchSlowConsumerGets503ErrorFrame</code>）。</li>
+<li>其他 watch 错误 → <code>ERROR</code> 帧 <code>code=500</code> <code>InternalError</code>。</li>
+<li>HTTP 状态码在流开始后不能再改，因此 410 和 503 的语义分别是：410 只在握手前
+  检测到压缩时作为整个响应返回；503 在流内以 ERROR 帧表示。</li>
+<li>客户端应把 ERROR 帧当作终止错误，重新 List 后以新的 list RV 重新 Watch。</li>
+</ul>
+<h2 id="status-子资源">status 子资源</h2>
+<p><code>GET/PUT/PATCH &lt;item&gt;/status</code>（Pod、Node、ReplicaSet、Deployment）。</p>
+<ul>
+<li><code>GET</code> 返回完整对象（与 item GET 相同）。</li>
+<li><code>PUT</code> 与 <code>PATCH</code> 语义相同：<strong>只替换 <code>status</code> 字段</strong>。服务端从存储对象出发，
+  复制请求体中的 status，保留 spec、labels、annotations、UID、name、namespace、
+  creationTimestamp 与 ownerReferences。body 中不同的 spec 会被忽略（不是 400）。
+  这是刻意的简化：本项目没有 field manager，/status 的 PATCH 使用状态替换；普通对象使用后述 Merge PATCH。</li>
+<li>body 可发送完整对象，也可只发 <code>{"metadata":{"resourceVersion":...},"status":{...}}</code>；
+  <code>apiVersion</code>/<code>kind</code> 若提供必须匹配路径；name/namespace 若提供必须与 URL 一致
+  （400）；<code>metadata.resourceVersion</code> 必须存在且为正整数（422），是 CAS 前提。</li>
+<li>UID 或 creationTimestamp 若提供且与存储不同 → 409（identity 保护）。</li>
+<li>无变化时<strong>不提交</strong>：返回当前对象与当前 RV，不推进 revision、不产生 watch 事件。
+  空 slice/空对象与缺失字段视为等价（<code>canonicalJSON</code> 归一化），避免 controller
+  自持循环。测试 <code>TestStatusNoOpKeepsResourceVersion</code>、
+  <code>TestStatusNoOpIgnoresEmptyCollectionShapes</code>。</li>
+<li>有变化时 <code>kv.Put(MatchRevision(rv))</code>；冲突 409，客户端 GET 后重试。提交前也会
+  先比较 RV，所以 stale 但 status 相同的请求不会误报成功。</li>
+<li>普通 <code>PUT &lt;item&gt;</code> <strong>仍然可以修改 status</strong>（A01 语义未收紧），因为对象没有拆分
+  数据面。需要只改 status 的组件应使用本子资源。<code>TestStatusAndBindingDoNotChangeNormalPutBehaviour</code>
+  固定这一简化。</li>
+</ul>
+<h2 id="binding-子资源">binding 子资源</h2>
+<p><code>POST /api/v1/namespaces/{ns}/pods/{name}/binding</code>，body：</p>
+<pre><code class="language-json">{"apiVersion":"v1","kind":"Binding",
+ "metadata":{"name":"web","namespace":"default","resourceVersion":"12"},
+ "target":{"kind":"Node","name":"node-1"}}
+</code></pre>
+<ul>
+<li><code>metadata.name</code> 必须等于 URL name（400）；namespace 若提供必须一致（400）；
+  <code>kind</code> 若提供必须是 <code>Binding</code>，<code>apiVersion</code> 若提供必须是 <code>v1</code>，<code>target.kind</code>
+  若提供必须是 <code>Node</code>（422）；<code>target.name</code> 按 DNS-1123 校验（422）。</li>
+<li>目标 Node 必须存在，否则 404；Pod 必须存在，否则 404。</li>
+<li>Pod 未绑定（<code>spec.nodeName==""</code>）：以读取到的当前 RV 做 CAS，写入
+  <code>spec.nodeName</code>，其余字段（containers、labels、UID…）保持。成功 200 + 更新后的
+  Pod，RV 前进 1。</li>
+<li>已绑定到同一 Node：幂等，返回当前对象与当前 RV，不写存储。</li>
+<li>已绑定到不同 Node：409。并发绑定同一 Pod 的两个不同目标恰好一个 200、一个
+  409（<code>TestBindingConcurrentExactlyOneWins</code>）；如果并发写者选择了同一目标，CAS
+  失败后重新读取并返回幂等成功。</li>
+<li><code>metadata.resourceVersion</code> 可选；提供时作为 CAS 前置条件（不符 409，格式错误
+  422）。</li>
+</ul>
+<p>没有跨 Node 查询与 Pod 写入的事务：Node 只做存在性检查。删除 Node 与绑定并发时
+可能绑定到一个刚刚消失的 Node，这是本轮明确接受的最小实现边界。</p>
+<h2 id="create">create</h2>
+<ol>
+<li>严格解码一个 JSON 对象。坏 JSON、数组、两个对象、尾随垃圾 → 400。未知字段
+   忽略（与简化后的 Kubernetes 一致），但对象必须是单个 JSON 值。超过
+   <code>MaxBodyBytes</code> → 413。</li>
+<li><code>metadata.name</code> 为空或不是 DNS-1123 子域 → 422。</li>
+<li>namespaced 资源：<code>metadata.namespace</code> 缺省取 URL，二者不一致 → 400；namespace
+   本身按 DNS-1123 label 校验（禁止 <code>.</code>）→ 422。cluster 资源带 namespace → 400。</li>
+<li><code>apiVersion</code>/<code>kind</code> 若提供必须与路径一致，否则 422；写入前统一填成路径对应的值。</li>
+<li>服务端覆盖 <code>metadata.uid</code>（UUIDv4）、<code>creationTimestamp</code>（UTC RFC3339），清空
+   <code>resourceVersion</code>。客户端提供的这三个值一律忽略。</li>
+<li>defaulting → validation（见下节），失败 422。</li>
+<li><code>kv.Put(key, body, kv.MustNotExist())</code>；已存在 → 409 <code>AlreadyExists</code>。</li>
+<li>响应 201，body 是写入对象 + 新 RV。</li>
+</ol>
+<p>create 不使用 clients 提供的 RV 做条件；并发同名 create 由 <code>MustNotExist</code> 保证恰好
+一个 201、其余 409。</p>
+<h2 id="updateput-item">update（PUT item）</h2>
+<ol>
+<li>解码与 create 相同。</li>
+<li><code>metadata.name</code> 必须等于 URL name，否则 400；name 本身仍要合法（422）。</li>
+<li>namespace 规则与 create 相同（缺省取 URL、不一致 400、非法 422、cluster 资源
+   带 namespace 400）。</li>
+<li><code>metadata.resourceVersion</code> 必须存在、是纯十进制正整数，否则 422。<code>""</code>、<code>"0"</code>、
+   <code>"+1"</code>、<code>" 1"</code>、<code>"1.0"</code>、负数都不接受。</li>
+<li>读当前对象。不存在 → 404。之后比较：
+   - <code>metadata.uid</code> 必须等于存储值（含“缺失”），否则 409；
+   - <code>metadata.creationTimestamp</code> 必须等于存储值，否则 409。
+   这两项在 CAS 之前检查，即使客户端猜中当前 RV 也不能改 identity（API-002）。</li>
+<li><code>apiVersion</code>/<code>kind</code> 检查、defaulting、validation，失败 422。</li>
+<li><code>kv.Put(key, body, kv.MatchRevision(rv))</code>。版本不符 → 409 <code>Conflict</code>；键已消失
+   → 404。</li>
+<li>响应 200，body 是写入对象 + 新 RV。</li>
+</ol>
+<p>body 中的 RV 不会进入存储。identity 字段在通过校验后才允许写回存储（它们与存储
+值相同），因此行为等价于“保护不可变字段”，实现简单且没有静默改写。</p>
+<p>同一 RV 上的并发 PUT：KV 在同一把锁内做条件检查与提交，恰好一个 200、其余 409。
+客户端应重新 GET 后重试。</p>
+<h2 id="delete">delete</h2>
+<p><code>DELETE &lt;item&gt;[?resourceVersion=X]</code></p>
+<ul>
+<li>无 <code>resourceVersion</code> 参数：无条件删除。</li>
+<li><code>?resourceVersion=</code>（参数存在但为空）与非法值一样返回 422。</li>
+<li>有合法值：<code>kv.MatchRevision(X)</code>，不符 → 409，键不存在 → 404。</li>
+<li>成功返回 200 与被删除前的对象（含删除前 RV）。删除本身占一个新 revision，因此
+  随后的 list RV 会大于返回对象的 RV。</li>
+<li>并发同 RV 删除：恰好一个 200，其余 404（删除后键不存在）。</li>
+</ul>
+<h2 id="list">list</h2>
+<ul>
+<li>单 namespace 与全 namespace 两种路径，均返回 <code>KindList</code>，<code>items</code> 永远是数组
+  （空时为 <code>[]</code>，不是 <code>null</code>）。</li>
+<li><code>metadata.resourceVersion</code> 取 <code>Range</code> 快照 revision。</li>
+<li>顺序：KV key 字节序，即 namespace 升序、同 namespace 内 name 升序。</li>
+<li>不做分页，也不支持 <code>labelSelector</code>、<code>fieldSelector</code>、<code>limit</code>、<code>continue</code>。这些参数
+  当前被忽略。Watch 同样忽略 <code>labelSelector</code>/<code>fieldSelector</code>；C01 需要时再定义。</li>
+</ul>
+<h2 id="defaulting">defaulting</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>资源</th>
+<th>默认值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pod（含 template）</td>
+<td><code>spec.restartPolicy=Always</code>；容器端口 <code>protocol=TCP</code>；init 容器同样处理</td>
+</tr>
+<tr>
+<td>Service</td>
+<td><code>spec.type=ClusterIP</code>；端口 <code>protocol=TCP</code>；<code>clusterIP</code> 保持空</td>
+</tr>
+<tr>
+<td>ReplicaSet</td>
+<td><code>spec.replicas=1</code>（nil 时）；template 同 Pod</td>
+</tr>
+<tr>
+<td>Deployment</td>
+<td><code>spec.replicas=1</code>；<code>strategy.type=RollingUpdate</code>；RollingUpdate 时 <code>maxSurge=maxUnavailable="25%"</code>；template 同 Pod</td>
+</tr>
+<tr>
+<td>Endpoints</td>
+<td>subset 端口 <code>protocol=TCP</code></td>
+</tr>
+<tr>
+<td>Node</td>
+<td>无</td>
+</tr>
+</tbody>
+</table></div>
+<p>API 接受空、显式 IPv4 或 <code>None</code> 的 clusterIP。P01 的单个 proxy 进程为缺省 ClusterIP
+分配地址，通过 RV 条件写回，重启从 Service 集合恢复占用；API 本身不分配。</p>
+<h2 id="validation失败一律-422">validation（失败一律 422）</h2>
+<ul>
+<li><strong>Pod spec</strong>：至少一个 <code>containers</code>；<code>restartPolicy</code> ∈ {Always, OnFailure, Never}；
+  容器 name 是 DNS label、image 非空、resources 非负、端口 1..65535 且不重名、
+  protocol ∈ {TCP, UDP}；init 与应用容器 name 全局不重名；volume name 为 DNS label
+  且不重名，<code>hostPath.path</code> 必须绝对路径，<code>volumeMounts</code> 必须引用已声明 volume 且
+  mountPath 绝对。</li>
+<li><strong>Node</strong>：capacity/allocatable 非负；allocatable 不得超过非零 capacity；
+  condition.status ∈ {True, False, Unknown} 且 type 非空；<code>spec.podCIDR</code> 可解析；
+  address 的 type 与 address 非空。</li>
+<li><strong>Service</strong>：至少一个 port；多端口时每项都需有名称；port 1..65535 且不重名；port name 为 DNS label 且不
+  重名；protocol ∈ {TCP, UDP}；<code>targetPort</code> 是 1..65535 的数字或 DNS label；
+  <code>type</code> ∈ {ClusterIP, NodePort}；NodePort 服务的 <code>nodePort</code> 为 0（待分配）或
+  30000..32767；<code>clusterIP</code> 为空、<code>None</code> 或合法 IPv4。</li>
+<li><strong>Endpoints</strong>：所有 address IP 可解析；端口 1..65535；protocol ∈ {TCP, UDP}。</li>
+<li><strong>ReplicaSet / Deployment</strong>：<code>replicas &gt;= 0</code>（nil 先 default 成 1）；
+  <code>selector.matchLabels</code> 非空且每个键值都在 <code>template.metadata.labels</code> 中
+  （RS/DEPLOY 的 selector/template 一致性，API 层强制）；template spec 同 Pod。</li>
+<li><strong>Deployment strategy</strong>：本 MVP 支持 <code>RollingUpdate</code>，其他 type 返回 422；
+  maxSurge/maxUnavailable 为非负数字或 0%..100% 的百分比。surge 百分比向上、
+  unavailable 向下取整；副本数大于零时，换算后两者不可同时为零。
+  template 的 <code>pod-template-hash</code> label 保留给 Deployment controller。</li>
+</ul>
+<p>除 identity 三项外，API 当前允许字段更新，包括 Service clusterIP；proxy 按最新
+Service 集合重建规则。稳定 VIP 指进程重启保留已发布地址，不限制用户主动修改。</p>
+<h2 id="错误格式">错误格式</h2>
+<p>所有错误响应是 <code>v1/Status</code>：</p>
+<pre><code class="language-json">{"apiVersion":"v1","kind":"Status","status":"Failure","message":"...","reason":"...","code":422}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>HTTP</th>
+<th>reason</th>
+<th>触发</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td><code>BadRequest</code></td>
+<td>坏 JSON、多对象、body/URL name 或 namespace 不一致、cluster 资源带 namespace</td>
+</tr>
+<tr>
+<td>404</td>
+<td><code>NotFound</code></td>
+<td>未知路径/资源、对象不存在、删除不存在键、update 时键消失</td>
+</tr>
+<tr>
+<td>405</td>
+<td><code>MethodNotAllowed</code></td>
+<td>未支持的 verb、全 namespace collection 上的 POST、带 watch 的非 GET</td>
+</tr>
+<tr>
+<td>409</td>
+<td><code>Conflict</code></td>
+<td>update/delete/status/binding 的 RV 不符、create 重名（<code>AlreadyExists</code>）、identity 不一致、binding 到不同 Node</td>
+</tr>
+<tr>
+<td>410</td>
+<td><code>Expired</code></td>
+<td>Watch 的 <code>resourceVersion</code> 早于保留窗口（仅握手阶段）</td>
+</tr>
+<tr>
+<td>413</td>
+<td><code>RequestEntityTooLarge</code></td>
+<td>body 超过限制或 KV 记录上限</td>
+</tr>
+<tr>
+<td>422</td>
+<td><code>Invalid</code></td>
+<td>name/namespace/RV 格式错误、default/validation 失败</td>
+</tr>
+<tr>
+<td>500</td>
+<td><code>InternalError</code></td>
+<td>存储读到无法解码的值、内部编码失败</td>
+</tr>
+<tr>
+<td>503</td>
+<td><code>ServiceUnavailable</code></td>
+<td>存储已关闭或写失败后不可用；Watch 流内的慢消费者 ERROR 帧</td>
+</tr>
+</tbody>
+</table></div>
+<p>响应统一 <code>Content-Type: application/json</code>。成功响应没有 envelope，直接是对象或列表。</p>
+<h2 id="go-client">Go client</h2>
+<pre><code class="language-go">func client.New(baseURL string, opts ...Option) (*Client, error)
+func client.WithHTTPClient(*http.Client) Option
+func client.WithTimeout(time.Duration) Option   // 默认 30s
+func (c *Client) BaseURL() string
+
+var Pods, Nodes, Services, Endpoints, ReplicaSets, Deployments client.Resource
+type Resource struct { APIVersion, Plural string; Namespaced bool }
+
+func (c *Client) Create(ctx, r, obj api.Object) (api.Object, error)
+func (c *Client) Get(ctx, r, namespace, name) (api.Object, error)
+func (c *Client) List(ctx, r, namespace) (api.ObjectList, error)
+func (c *Client) Update(ctx, r, obj api.Object) (api.Object, error)
+func (c *Client) Delete(ctx, r, namespace, name, resourceVersion string) (api.Object, error)
+
+// A02
+func (c *Client) WatchCollection(ctx context.Context, r Resource, namespace string, opts WatchOptions) (*Watch, error)
+func (c *Client) GetStatus(ctx context.Context, r Resource, namespace, name string) (api.Object, error)
+func (c *Client) UpdateStatus(ctx context.Context, r Resource, obj api.Object) (api.Object, error)
+func (c *Client) BindPod(ctx context.Context, namespace, podName, nodeName string) (api.Object, error)
+
+type WatchOptions struct{ ResourceVersion string }
+type WatchEvent struct{ Type string; Object api.Object }
+type Watch struct {
+    Events &lt;-chan WatchEvent
+    Errors &lt;-chan error
+}
+func (w *Watch) Stop()          // 取消、关闭 body、等待读取 goroutine 退出
+func (w *Watch) Done() &lt;-chan struct{}
+</code></pre>
+<p><code>Create</code> 从 <code>metadata.namespace</code> 得到 collection 路径；namespaced 资源缺 namespace
+在本地报错，不发请求。<code>Get</code>/<code>Delete</code> 的 namespaced 资源必须给 namespace。
+<code>Update</code> 要求 <code>metadata.name</code>、namespaced 时 <code>metadata.namespace</code> 与非空
+<code>metadata.resourceVersion</code>。<code>Delete</code> 的 RV 为空表示无条件删除。</p>
+<p>非 2xx 返回 <code>*client.StatusError{Code, Reason, Message, Body}</code>，<code>Message</code> 来自服务端
+<code>Status</code>。<code>client.IsNotFound(err)</code>/<code>client.IsConflict(err)</code> 用 <code>errors.As</code> 判断，
+可用于重试逻辑。网络错误包装 <code>client: &lt;method&gt; &lt;path&gt;: &lt;cause&gt;</code>；
+<code>context</code> 取消与超时通过 <code>http.NewRequestWithContext</code> 传播，<code>errors.Is(err,
+context.Canceled)</code> 成立。</p>
+<p>成功响应读取完整 JSON。单条记录的大小限制适用于写入对象，列表可包含多个合法对象，因此客户端没有独立的 8 MiB 截断。请求仍遵循 context 和 HTTP client 超时。</p>
+<p>泛型窄包装（非泛型方法仍是唯一实现路径）：</p>
+<pre><code class="language-go">pod,  err := client.GetAs[*api.Pod](ctx, c, client.Pods, "default", "web")
+pods, err := client.ListAs[*api.PodList](ctx, c, client.Pods, "")
+pod,  err := client.CreateAs(ctx, c, client.Pods, &amp;api.Pod{...})
+pod,  err := client.UpdateAs(ctx, c, client.Pods, pod)
+pod,  err := client.DeleteAs[*api.Pod](ctx, c, client.Pods, "default", "web", rv)
+
+// Watch（独立流式路径，不走 do 的整段读取）
+w, err := c.WatchCollection(ctx, client.Pods, "default", client.WatchOptions{})
+for ev := range w.Events {
+    // ev.Type ∈ ADDED/MODIFIED/DELETED/BOOKMARK
+    // ev.Object.GetObjectMeta().ResourceVersion 是事件 revision
+}
+if err := &lt;-w.Errors; err != nil { ... }
+w.Stop()
+
+pod, err := client.GetStatusAs[*api.Pod](ctx, c, client.Pods, "default", "web")
+pod, err = client.UpdateStatusAs[*api.Pod](ctx, c, client.Pods, pod)
+pod, err = client.BindPodAs[*api.Pod](ctx, c, "default", "web", "node-1")
+</code></pre>
+<h3 id="流式-watch-的客户端语义">流式 Watch 的客户端语义</h3>
+<ul>
+<li><code>WatchCollection</code> 用 <code>bufio.Reader</code> 逐行解码，不读完整响应；底层 <code>http.Client</code>
+  复制一份并清空 <code>Timeout</code>，流的生命周期由 ctx 与 <code>Stop</code> 控制。</li>
+<li>握手非 2xx（含 410）→ 返回 <code>*StatusError</code>，不启动读取 goroutine，<code>Events/Errors</code>
+  不会被使用。</li>
+<li>成功 2xx 后返回 <code>*Watch</code>。<code>Events</code> 交付正常帧；<code>Errors</code> 缓冲 1，交付终止原因
+  （ERROR 帧被解析为带 code/reason/message 的 <code>*StatusError</code>），随后两 channel
+  都关闭。</li>
+<li><code>Stop</code> 幂等：取消 ctx、关闭响应 body，并等待读取 goroutine 结束；返回后 <code>Done()</code>
+  已关闭。ctx 取消同样会让读取退出，<code>Done()</code> 关闭，且不会把本地取消误报为错误。</li>
+<li>解码失败/网络断开会把错误放入 <code>Errors</code>；服务端正常结束（EOF）则安静关闭。</li>
+<li>测试 <code>TestClientWatchSnapshotBookmarkAndLive</code>、<code>TestClientWatchStopWaitsForReader</code>、
+  <code>TestClientWatchContextCancelWaitsForExit</code>、<code>TestClientWatchErrorFrameIsStatusError</code>、
+  <code>TestClientWatchCompactedHandshakeIsStatusError</code>、<code>TestClientWatchExactCatchesConcurrentWrite</code>。</li>
+</ul>
+<h2 id="尚未提供的-api-能力">尚未提供的 API 能力</h2>
+<ul>
+<li>JSON Patch / strategic merge patch：普通对象提供 JSON Merge PATCH；<code>PATCH /status</code> 与 PUT 同义。</li>
+<li>apply、field management、managedFields。</li>
+<li>Watch 的 <code>labelSelector</code>/<code>fieldSelector</code>/<code>timeoutSeconds</code>/<code>allowWatchBookmarks</code>
+  参数；这些参数当前被忽略，bookmark 恒按服务端周期发送。</li>
+<li>多路复用（HTTP/2）、压缩、<code>resourceVersionMatch</code>。</li>
+<li>label/field selector、分页、排序参数、Table/PartialObject。</li>
+<li>authn/authz、TLS、多租户、速率限制。</li>
+<li>NodePort 分配与转发、Service 不可变字段。ClusterIP 分配已由 P01 实现，
+  Endpoints 自动生成已由 R02 实现，见对应契约。</li>
+<li>独立 KV 进程、多 API Server 实例共写同一日志（K01 已声明不支持）。</li>
+</ul>
+<p>这些能力在对应任务实现前，API 的响应是 404、405 或忽略参数；A01/A02 已实现的
+Watch、status、binding 语义以上文为准。</p>
+<h2 id="a02-实现落点">A02 实现落点</h2>
+<ul>
+<li><code>internal/api/watch.go</code>：<code>handleWatch</code>、RV 三态解析、快照+bookmark 顺序、
+  周期 bookmark、帧编码与 ERROR 帧。</li>
+<li><code>internal/api/status.go</code>：<code>handleStatus</code>（GET/PUT/PATCH）、status 合并、
+  no-op 检测与 CAS。</li>
+<li><code>internal/api/subresource.go</code>：<code>Binding</code> 类型、<code>handleBinding</code>、CAS 与幂等。</li>
+<li><code>internal/api/server.go</code>：子资源分派、watch 分派、<code>Options.BookmarkInterval</code>、
+  <code>Server.Shutdown</code>、<code>ErrCompacted → 410 Expired</code>。</li>
+<li><code>internal/client/client.go</code>：<code>WatchCollection</code>/<code>Watch</code>/<code>Stop</code>/<code>Done</code>、
+  <code>UpdateStatus</code>/<code>GetStatus</code>/<code>BindPod</code> 及泛型包装。</li>
+<li><code>cmd/mini-apiserver/main.go</code>：shutdown 顺序先 <code>api.Server.Shutdown</code> 再
+  <code>http.Server.Shutdown</code>。</li>
+</ul>
+<h2 id="c01-依赖">C01 依赖</h2>
+<p>C01（Informer/WorkQueue）应使用：</p>
+<ol>
+<li><code>List(prefix)</code> 取列表及其 <code>metadata.resourceVersion</code>；</li>
+<li><code>WatchCollection(..., WatchOptions{ResourceVersion: listRV})</code> 从该 RV 之后续接；</li>
+<li>缺省 Watch 模式用于“先快照后增量”的一次性同步（先消费 ADDED 直到 BOOKMARK，
+   再处理后续帧）；</li>
+<li><code>Stop</code>/<code>Done</code> 管理生命周期，<code>*StatusError</code> 的 410 和 503 分别触发重新 List；</li>
+<li>所有事件对象都可用 <code>DeepCopyObject</code> 缓存，RV 来自事件帧而非二次 GET。</li>
+</ol>
+<h2 id="c01--s01-接入补充">C01 / S01 接入补充</h2>
+<p><code>ObjectList</code> 现提供 <code>GetListMeta()</code> 与 <code>GetObjects()</code>，后者返回独立副本，供缓存安装快照。
+<code>client.BindPodObject(ctx, pod, nodeName)</code> 提交 UID/RV 条件；<code>/binding</code> 检查 UID，
+CAS 冲突返回 409。无条件的 <code>BindPod</code> 保持同目标幂等。Watch 非 2xx 响应先读取 Status
+再取消请求，流式读取的 EOF/错误路径关闭响应体，Done 在清理完成后关闭。</p>
+<p>缓存/队列与调度行为见 <a href="informer-queue.html">informer-queue.md</a>、<a href="scheduler.html">scheduler.md</a>。</p>
+<h2 id="普通对象的-merge-patch原文范围对齐">普通对象的 Merge PATCH（原文范围对齐）</h2>
+<p>普通资源 item 现在支持 PATCH，Content-Type 为 application/merge-patch+json。body 是一个
+JSON 对象，必须显式提供 metadata.resourceVersion。字段递归合并，数组整体替换，null
+删除字段；合并后沿用 PUT 的身份保护、defaulting、validation 和 CAS。正整数 RV 缺失/非法
+返回 422，旧 RV 返回 409，媒体类型不支持返回 415。仅支持对象形式，嵌套对象最多 128 层。
+UID/name/namespace 等身份保护与 PUT 相同，所有数字保持整数精度。</p>
+<p>例如：<code>{"metadata":{"resourceVersion":"12","labels":{"version":"v2","old":null}}}</code>。
+/status 的 PATCH 继续是现有 status 替换语义，和普通资源 Merge PATCH 分别定义。
+Go 客户端提供 Client.Patch(ctx, resource, namespace, name, patch)。
+算法依据：<a href="https://www.rfc-editor.org/rfc/rfc7396">RFC 7396</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

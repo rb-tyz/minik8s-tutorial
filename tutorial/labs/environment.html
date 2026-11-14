@@ -1,0 +1,95 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>实验环境：提供工具，自己实现编排 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="实验环境提供工具自己实现编排">实验环境：提供工具，自己实现编排</h1>
+<p>课程提供两种入口：用自动 runner 从基础镜像完成验证并销毁 VM，或在自己获批的可销毁 KVM
+里逐步操作。自动入口见 <a href="../10-integration.html">集成章</a>；以下解释其安装内容，也供手工环境参考。
+本页所有系统、运行时和网络命令均在已核对身份的 Debian 12 amd64 guest 内执行。</p>
+<h2 id="1-在宿主机准备普通文件">1. 在宿主机准备普通文件</h2>
+<p>从仓库根目录构建静态 Linux 二进制与 fixture 镜像：</p>
+<pre><code class="language-bash">COURSE_PAYLOAD=$(mktemp -d /tmp/minik8s-course-payload.XXXXXX)
+for component in mini-apiserver mini-scheduler mini-kubelet mini-controller-manager mini-cni mini-proxy; do
+  (cd reference &amp;&amp; CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+    -o "$COURSE_PAYLOAD/$component" "./cmd/$component")
+done
+(cd reference &amp;&amp; CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+  -o "$COURSE_PAYLOAD/fixture" ./tests)
+python3 reference/tests/vm/make_image.py "$COURSE_PAYLOAD/fixture" "$COURSE_PAYLOAD/image.tar"
+cp -r tutorial grader "$COURSE_PAYLOAD/"
+</code></pre>
+<p>将目录传到目标 guest 的 <code>/root/course</code>；将已校验的 crictl v1.29.0 tar.gz 传到
+<code>/root/crictl.tar.gz</code>。SSH 地址/密钥和 UUID 取自本次 VM 创建记录。使用自己的组件时替换
+对应二进制；fixture、crictl 和 guest 的基础软件仍是实验依赖。宿主机此时只处理普通文件。
+自动 runner 已完成这些传输，不需要重复执行。</p>
+<h2 id="2-在-guest-核对身份后准备工具">2. 在 guest 核对身份后准备工具</h2>
+<p>在 Bash 中设置 VM_UUID 为创建记录里的 UUID，再运行此保护；读取当前 UUID 后自行填入
+相同值会失去身份核对作用。后续每个新的 root shell 都先运行该保护。</p>
+<pre><code class="language-bash">VM_UUID='&lt;本次批准的VM创建记录中的UUID&gt;'
+[[ $(systemd-detect-virt --vm) == kvm ]] || exit 1
+ACTUAL_UUID=$(cat /sys/class/dmi/id/product_uuid)
+[[ ${ACTUAL_UUID,,} == ${VM_UUID,,} ]] || exit 1
+export VM_UUID
+</code></pre>
+<p>新 guest 使用下列依赖。安装需要 Debian 软件源可用，超时后保留日志再处理网络：</p>
+<pre><code class="language-bash">timeout 300 apt-get update
+timeout 300 apt-get install -y --no-install-recommends \
+  containerd runc iproute2 iptables containernetworking-plugins curl jq python3
+tar -xzf /root/crictl.tar.gz -C /usr/local/bin crictl
+chmod +x /root/course/mini-*
+</code></pre>
+<h2 id="3-配置-cri-与-cni">3. 配置 CRI 与 CNI</h2>
+<p>在此专用 guest 中停 containerd，写入本次配置。它采用 systemd cgroup、runc v2、Pod 网络，
+sandbox 与应用使用同一提供的镜像。NetworkReady 依赖 CNI 配置和插件可用。</p>
+<pre><code class="language-bash">systemctl stop containerd
+mkdir -p /etc/containerd /etc/cni/net.d /var/lib/minik8s/cni
+install -m 755 /root/course/mini-cni /usr/lib/cni/mini-cni
+cat &gt; /etc/containerd/config.toml &lt;&lt;'CONFIG'
+version = 2
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "minik8s.local/fixture:n01"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+  SystemdCgroup = true
+[plugins."io.containerd.grpc.v1.cri".cni]
+  bin_dir = "/usr/lib/cni"
+  conf_dir = "/etc/cni/net.d"
+CONFIG
+jq -n --arg uuid "$VM_UUID" \
+  '{cniVersion:"0.4.0",name:"minik8s",type:"mini-cni",bridge:"mk8s0",vmID:$uuid,
+    ipam:{subnet:"10.244.0.0/24",stateFile:"/var/lib/minik8s/cni/allocations.json"}}' \
+  &gt; /etc/cni/net.d/10-minik8s.conf
+modprobe br_netfilter
+sysctl -w net.ipv4.ip_forward=1
+sysctl -w net.bridge.bridge-nf-call-iptables=1
+systemctl start containerd
+ctr -n k8s.io images import /root/course/image.tar
+crictl --runtime-endpoint unix:///run/containerd/containerd.sock --timeout 10s info -o json
+</code></pre>
+<p>conditions 中 RuntimeReady/NetworkReady 应为 true。这份配置是已验证环境的工具选择；
+课程公开的机制是通过 CRI 启动 sandbox/容器、经 CNI 配网。源码包名与具体工具路径可不同。</p>
+<h2 id="4-五个进程怎样启动">4. 五个进程怎样启动</h2>
+<p>在 guest 新建独立目录 <code>/root/course-run</code> 保存本次数据和日志。每条命令在单独的终端前台
+执行，或者由自己的启动适配器管理 PID；每个终端先完成第 2 节身份核对。采用本页路径时：</p>
+<pre><code class="language-bash">mkdir -p /root/course-run
+/root/course/mini-apiserver --listen 127.0.0.1:18880 --data /root/course-run/store.wal
+</code></pre>
+<p>API 可读取 Node List 后，在其他终端分别启动：</p>
+<pre><code class="language-bash">/root/course/mini-kubelet --server http://127.0.0.1:18880 --vm-id "$VM_UUID" \
+  --node course-node --network-mode pod --cpu 2000 --memory 1073741824 \
+  --data /root/course-run/node
+/root/course/mini-scheduler --server http://127.0.0.1:18880
+/root/course/mini-controller-manager --server http://127.0.0.1:18880
+/root/course/mini-proxy --server http://127.0.0.1:18880 --vm-id "$VM_UUID" --service-cidr 10.96.0.0/24
+</code></pre>
+<p>上面四条各占一个前台终端。kubelet 默认 address=127.0.0.1，适用于单节点；双节点设置
+实际链路地址、不同 node 名、各自 UUID。只有一个 proxy 分配 VIP，其余增加 --observer-only。
+跨节点的 PodCIDR/路由按第 09 章配置。控制平面各运行一个，kubelet/proxy 每节点一个。</p>
+<h2 id="5-停止与回收">5. 停止与回收</h2>
+<p>先按 <a href="workloads.html">workloads</a> 删除本次工作负载，等待 Pod、实际 CRI 资源与 IPAM 回收；
+再 Ctrl-C 停 controller-manager、scheduler、proxy，确认自有规则清除，再停 kubelet/API。
+删除本次临时数据，最后由 VM 管理端停止并删除本次 VM。使用现有创建器时：</p>
+<pre><code class="language-bash"># 回到宿主机；COURSE_VM_STATE 是本次 audit/vm/lab.py 创建的状态目录
+python3 audit/vm/lab.py --state "$COURSE_VM_STATE" stop
+</code></pre>
+<p>该命令检查 PID/UUID 并停止两个本次创建的 QEMU，保留 nodes.json 与磁盘供核对。
+确认 stop 成功并保存创建/停止日志后，删除本次 COURSE_VM_STATE 目录及其中磁盘、seed 和密钥。
+其他 VM 管理方式按其创建记录销毁资源。下载输入和 COURSE_PAYLOAD 由创建者另行删除。
+自动 runner 已在正常与失败出口执行这些操作，输出包含清理记录。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

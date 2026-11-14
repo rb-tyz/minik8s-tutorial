@@ -1,0 +1,325 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MiniK8s 原教程审计报告 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="minik8s-原教程审计报告">MiniK8s 原教程审计报告</h1>
+<p>审计对象为 Harut8/system-design 的 <code>kubernetes/38-building-a-kubernetes-from-scratch.md</code>，固定文件提交 <code>506abffc121e7ad98cdc8f310a9f0a8db69d0843</code>。本地原文共 3118 行，SHA-256 为 <code>12351d79434b719bd44cecedf2cbf53b898847c7d5d74226a7466676a7228f3d</code>。本轮为 2026-11-05 的验收后修订。</p>
+<p>原教程提供组件分解、接口草图和分阶段任务。它包含值得复用的 List/Watch、level-triggered reconcile、调度与容器运行流程，也包含会影响实现的控制流错误和未给出的接口。本报告把原文错误、实现缺口、教学简化及撤回的误判分别记录；后续实现以经过验证的行为契约为依据。</p>
+<p>逐项内容见 <a href="ERRORS.html">ERRORS.md</a>，分类与证据统计见 <a href="STATS.html">STATS.md</a>。102 个稳定 ID（原 100 条及新增 CNI-009/010） 保留检索关系，修订后的分类通过 <span class="local-artifact" title="本地工程附件：audit/records.json">records.json（本地工程附件）</span> 统一生成。每条具有原文位置、触发条件、原因、证据、建议、影响与验证状态。</p>
+<p>本轮普通用户态复验入口为 <code>bash audit/evidence/verify.sh</code>，可以从项目外启动。证据适配器和 fake API 的假设见下文。用户批准新建 KVM 后，本轮在两台独立 guest 复验了内核、runc、CRI 和网络机制，并验证自动销毁。旧日志保留作历史材料。第二阶段的完整参考实现、最终教程与独立黑盒测试器继续按项目计划开展。</p>
+<h2 id="范围与材料">范围与材料</h2>
+<p>第一轮覆盖 KV、API、List/Watch、Informer、WorkQueue、Scheduler、Kubelet/CRI、ReplicaSet、Deployment、CNI 和 Service Proxy。保留原文声明的单节点、单副本、hostPath、ClusterIP 简化。跨节点、NodePort、DNS、路径路由及故障恢复按项目后续模块扩展；HPA、指标监控、Service Mesh、Serverless 排除在当前项目范围之外。</p>
+<p>一手依据统一固定为 client-go v0.29.0、Kubernetes v1.29.0、CNI v1.1.0、plugins v1.4.0 和 OCI runtime-spec v1.1.0。固定 tag、commit、路径及用途见 <span class="local-artifact" title="本地工程附件：audit/evidence/research/SOURCES.txt">SOURCES.txt（本地工程附件）</span>。网页快照分别记录下载时点。原先误标为固定版本的 11 份快照保存在 <code>research/superseded/</code>；<span class="local-artifact" title="本地工程附件：audit/evidence/research/VERSION_CORRECTION.md">VERSION_CORRECTION.md（本地工程附件）</span> 记录修正，旧文件及日志保留原样。</p>
+<p>Go 转录中：KV 的主要方法、queue 的 Add/Get/Done、Informer.Run、scheduler 的 fits/score、各 reconcile 的控制流来自原文。资源类型、客户端、未定义 helper、cache 和构造器是审计适配器。反例的分类取决于错误发生在哪一层。特别是 RS 的 owner/name、template label、schedulerCache 的初值、UpdatePodStatus 的 HTTP 写入范围，均在逐条记录中交代假设。</p>
+<h2 id="章节覆盖">章节覆盖</h2>
+<p>下表覆盖原文 24 个一级章节。行号用于定位本地固定副本，关联 ID 同时包含问题、设计记录和撤回项。原文起止行有疑问时，以章节标题和函数名定位。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>章</th>
+<th>主题</th>
+<th>原文行</th>
+<th>关联记录</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>TL;DR</td>
+<td>44–50</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>5000 vs 4M</td>
+<td>52–97</td>
+<td>DOC-002</td>
+</tr>
+<tr>
+<td>3</td>
+<td>最小特性集</td>
+<td>98–132</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>组件与章映射</td>
+<td>133–157</td>
+<td>DOC-003</td>
+</tr>
+<tr>
+<td>5</td>
+<td>十阶段构建顺序</td>
+<td>158–229</td>
+<td>DOC-001</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Phase 1 手工容器</td>
+<td>230–435</td>
+<td>CGROUP-001/002/003, RUNTIME-001/002/003/004</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Phase 2 CRI gRPC</td>
+<td>436–581</td>
+<td>PROTO-001..003, RUNTIME-001/005</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Phase 3 minikv</td>
+<td>582–849</td>
+<td>KV-001..010</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Phase 4 apiserver</td>
+<td>850–1056</td>
+<td>API-001..006, XC-002/003</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Phase 5 watch</td>
+<td>1057–1172</td>
+<td>WATCH-001..006</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Phase 6 kubelet</td>
+<td>1173–1442</td>
+<td>KUBELET-001..007</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Phase 7 scheduler</td>
+<td>1443–1594</td>
+<td>SCHED-001..008</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Phase 8 controllers</td>
+<td>1595–1970</td>
+<td>INFORMER-001..006, QUEUE-001..005, RS-001..006, DEPLOY-001/002, EPS-001/002</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Phase 9 mini-cni</td>
+<td>1971–2174</td>
+<td>CNI-001..008</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Phase 10 mini-proxy</td>
+<td>2175–2306</td>
+<td>PROXY-001..008</td>
+</tr>
+<tr>
+<td>16</td>
+<td>故意跳过</td>
+<td>2307–2338</td>
+<td>—</td>
+</tr>
+<tr>
+<td>17</td>
+<td>额外 99.9% 去向</td>
+<td>2339–2444</td>
+<td>DOC-004</td>
+</tr>
+<tr>
+<td>18</td>
+<td>端到端 demo</td>
+<td>2445–2651</td>
+<td>DOC-005, WATCH-006</td>
+</tr>
+<tr>
+<td>19</td>
+<td>源码映射</td>
+<td>2652–2682</td>
+<td>DOC-006</td>
+</tr>
+<tr>
+<td>20</td>
+<td>教学要点</td>
+<td>2683–2731</td>
+<td>—</td>
+</tr>
+<tr>
+<td>21</td>
+<td>后续项目</td>
+<td>2732–2779</td>
+<td>DOC-007</td>
+</tr>
+<tr>
+<td>22</td>
+<td>复杂度 taxonomy</td>
+<td>2780–2934</td>
+<td>—</td>
+</tr>
+<tr>
+<td>23</td>
+<td>反思</td>
+<td>2935–3002</td>
+<td>—</td>
+</tr>
+<tr>
+<td>24</td>
+<td>社区路径</td>
+<td>3003–3117</td>
+<td>DOC-008</td>
+</tr>
+</tbody>
+</table></div>
+<p>原文 §3、§16 的范围声明和 §22 的功能分类作为教学组织材料保留。§18 的时序输出采用设计推演处理；实际运行证据来自本项目保存的命令和日志。</p>
+<h2 id="架构与进程接口">架构与进程接口</h2>
+<pre><code class="language-text">用户 CLI / curl
+       | HTTP JSON / watch stream
+       v
+API Server + 进程内 KV
+       | List/Watch、CRUD、/status、/binding
+       +-- Controller Manager -- Deployment -&gt; ReplicaSet -&gt; Pod
+       +-- Scheduler ----------- 选择 Node、原子绑定
+       +-- Kubelet ------------- CRI client -&gt; runtime -&gt; 容器
+       |                         CNI exec -&gt; netns 网络
+       +-- Service Proxy ------- Service + Endpoints -&gt; 转发规则
+</code></pre>
+<p>原文 §8 将 KV 定义为进程内接口，§18 又用独立 KV 进程和 <code>--kv localhost:2379</code> 启动，属于接口冲突（XC-001）。第二阶段采用 API Server 内嵌单机持久 KV，避免额外设计存储 RPC。其他组件作为独立进程，通过 HTTP 与 API 通信；runtime 与 Kubelet 之间使用公开的 CRI 子集，CNI 使用 stdin/env/stdout 调用契约。</p>
+<p>创建 Deployment 的依赖链为：API 写 Deployment；Deployment controller 写 RS；RS controller 写 Pod；scheduler 原子写绑定；节点 Kubelet 创建 sandbox、配置网络、启动容器并写 status；Endpoints controller 根据 selector/ready 生成后端；proxy 根据 Service 与后端发布转发规则。每步输出由后续组件的 List/Watch 消费，缓存和重试属于收敛机制。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>接口</th>
+<th>第二阶段需固定的行为</th>
+<th>原文分析</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KV Get/Range</td>
+<td>值、item modRevision、集合 snapshot revision；原子快照</td>
+<td>Range 锁内读提供一致快照，顺序另行声明</td>
+</tr>
+<tr>
+<td>KV CAS</td>
+<td>不存在条件、匹配版本写入、失败不增加 revision</td>
+<td>复用原文单键 CAS；错误处理和持久化需补齐</td>
+</tr>
+<tr>
+<td>API CRUD</td>
+<td>body/URL identity、类型校验、409、item/list RV</td>
+<td>原文仅提供部分 handler；补齐公开路由</td>
+</tr>
+<tr>
+<td>Watch</td>
+<td>缺省/0/具体 RV、重放顺序、bookmark、终止原因</td>
+<td>KV-001、KV-004、WATCH-002/003 等</td>
+</tr>
+<tr>
+<td>/binding</td>
+<td>空 nodeName 的条件写入；同一 Pod 幂等</td>
+<td>§12.3 有 HTTP 契约，类型及 handler 未给</td>
+</tr>
+<tr>
+<td>/status</td>
+<td>只更新 status，保留 spec/identity，CAS 冲突重试</td>
+<td>UpdatePodStatus 参数类型不足以确定线上的写入范围</td>
+</tr>
+<tr>
+<td>CRI</td>
+<td>sandbox/container ID、状态与退出码、幂等清理</td>
+<td>proto 缺消息定义；/proc/status 无退出码</td>
+</tr>
+<tr>
+<td>CNI</td>
+<td>ADD/DEL/CHECK、netns 生命周期、IPAM 锁、Result JSON</td>
+<td>名称、类型及清理契约需修正</td>
+</tr>
+<tr>
+<td>Proxy</td>
+<td>原子发布当前规则、清除失效链、必要的返程 NAT</td>
+<td>编译调用链失败；历史 VM 日志记录网络条件</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="kv版本与恢复">KV、版本与恢复</h2>
+<p>KV-001 的普通用户态实验在 Watch 释放锁后、订阅循环启动前插入一次 Put，观察到该事件未投递。订阅循环把当时的 currentRev 当作起点，越过了窗口内的写入。投递游标应从最后一个已交付 revision 继续。快照和游标注册需在同一存储顺序下完成；投递 I/O 放到写锁外，慢客户端采用有界队列和可解释的断流策略。</p>
+<p>KV-002 在全部历史都可压缩时保留 cut=0，历史未裁剪而 compactRev 已推进。KV-003 的 cancel 既不唤醒 cond，也不关闭消费者流。KV-007 将调用方的 byte slice 保存进 history，调用方后续修改会改变历史事件。这些程序行为已有普通用户态反例。</p>
+<p>trimHistory 未给实现（KV-009），转录中的 no-op 属于辅助补齐。Range 的无序返回按设计选择记录（KV-008）；只有上层 API 需要稳定分页或排序时才增加有序契约。相同内容的 Put 推进 revision 符合 KV 写语义（KV-006），无变化的 status 写入应在调用方合并。</p>
+<p>原文未提供 WAL、snapshot 或进程崩溃恢复的实现，§18 却出现 <code>--snapshot</code> 参数。持久化覆盖结论为“实现缺口，待实现后运行验证”。第二阶段至少要固定：成功响应前的持久化点、单调 revision 恢复、损坏记录处理、snapshot 与历史保留窗口。验收分别覆盖正常重启、写入中断和损坏记录；保留最后一次确认写入，恢复后继续 CAS/Watch。</p>
+<h2 id="apilistwatch">API、List/Watch</h2>
+<p>写入后的对象 RV 应由存储返回的 modRevision 在编码 GET/LIST/WATCH 时填入。存储 JSON 中没有最新 RV 本身可由编码层处理；API-001 记录的是编码契约缺失和辅助适配器原样返回字节的结果。对同一对象再 Put 一次回填 RV 会额外产生 revision 和事件，第二阶段采用单次提交加读出投影。</p>
+<p>API-002 的辅助写路径缺少 body/URL identity 保护。实现时校验 name、namespace、UID，使用成功解析的 RV 做 CAS；handler、validation、mutator 的职责分开记录。<code>/status</code> 和 <code>/binding</code> 已在原文文字中提出，缺的是可执行路由及端到端契约。</p>
+<p>Watch 的三种 RV 输入要能区分。具体 RV=X 从 X 之后投递；缺省 RV 使用所声明的当前状态起点；显式 0 的初始状态与历史选择策略需写出。第二阶段应选择并记录是否提供 synthetic ADDED，以及普通 watch 与初始化 watch 的关系，随后用 List→Watch 并发写测试验证连续性。bookmark 的 RV 不得越过该流尚未交付的匹配事件。</p>
+<p>错误帧采用可识别的 Status。Gone 是合法 reason，Expired 也用于版本过期；XC-006 的非法枚举判定已撤回。慢消费者终止与所需历史已压缩是不同原因，API 应记录其实际原因并规定客户端如何重新获取状态。</p>
+<h2 id="informer-与-workqueue">Informer 与 WorkQueue</h2>
+<p>Informer.Run 在正常 EOF 后再次执行 close(synced)，普通用户态测试复现 panic（INFORMER-001）。ERROR 分支替换 synced 字段与读方同步还需审查（INFORMER-006）；历史最小 race 样例是辅助模型，当前七模块 -race 结果按实际测试覆盖记录，另有隔离子进程中的有限竞态复现。首次同步信号保持一次关闭，relist/重连使用独立生命周期；ctx 取消应退出 List、Watch 与重试等待。</p>
+<p>INFORMER-002 的 relist 后辅助缓存正确移除了 b，缺的是 OnDelete 通知。原文已声明全量 OnAdd 是简化，INFORMER-002/003 按教学简化保留。官方 ThreadSafeStore.Replace 返回 void，DeltaFIFO.Replace 内部生成删除 delta；自实现需要明确缓存替换与 handler 通知的分工。</p>
+<p>queue 的 delayed map 没有消费者，已到期 key 不会重试（QUEUE-001/002）；Get 没有 shutdown 退出路径（QUEUE-003）。第二阶段实现一个计时堆/定时器驱动的延时队列，支持有界 backoff、Forget 和 ShutDown，并用失败后到期重新取出、取消与并发去重验收。</p>
+<p>处理期间新事件把 key 标成 dirty，Done 立即重排符合 client-go 语义（QUEUE-004 已撤回）。新事件唤醒与失败退避可并存。QUEUE-005 的反例已改为实际调用 AddRateLimited 63/64 次并检查生成的 deadline，避免在测试中重复抄写位移公式。</p>
+<h2 id="scheduler-与控制器">Scheduler 与控制器</h2>
+<p>score 对零容量维度直接整数除法，零请求 Pod 通过 fits 后可以触发 panic（SCHED-001）。资源计算需声明 init container、应用容器和单位的处理方式。cache 的构造、账本重建和删除释放未在原文中给实现；SCHED-002/006 的空 cache 实验按辅助观察记录。重启时从已绑定 Pod 建账，Assume 后的重复 watch、失败绑定与 Pod 删除均按 UID 幂等处理。</p>
+<p>原文只实现资源筛选和 least-allocated 评分，健康策略作为扩展契约记录。填写 nodeName 的 Pod 已分配节点，跳过该调度器属于预期行为（SCHED-007 已撤回）。多调度器属于单副本范围之外，新增 HA 时需要选主与原子绑定。</p>
+<p>RS-001 用冻结 lister 模拟尚未观察到自身写入，复现重复创建。实现中使用 expectations 或等价的未观察写入账本；以 API 中的真实 Pod 数和并发事件验证上界。owner identity 按 UID，template 与 selector 的一致性由 API 校验；RS-002/003 的旧归因来自审计补写 helper，已撤回或改成实现要求。</p>
+<p>部分创建成功后发生错误，保留成功结果供下轮收敛是有效策略（RS-004）。缩容优先删除较新 Pod 是原文声明的选择，官方在其他条件相同时也采用该顺序（RS-005 已撤回）。无变化也写 status 的自持循环需在客户端或 API 抑制（RS-006）。</p>
+<p>Deployment 等待新 RS 就绪再删旧副本符合滚动更新（DEPLOY-001 已撤回）。测试增加 Ready 到达后的下一轮 reconcile，验证旧 RS 能从 3 缩到 2。UpdateRS 的错误必须处理，修改共享 cache 前先拷贝（DEPLOY-002）。按 maxSurge/maxUnavailable 验收新旧 RS 的总副本与可用副本数。</p>
+<p>Endpoints 的 nil Service 分支仍访问 svc.Namespace，普通用户态测试复现 panic（EPS-001）。原文文字声明监听 Service 与 Pod；只凭 reconcile 的参数类型无法判断事件接线。EPS-002 按未展开的事件索引/端口类型契约记录。</p>
+<h2 id="kubelet运行时与网络">Kubelet、运行时与网络</h2>
+<p>Kubelet 的容器 ID 与 sandbox ID 要分别管理；init containers 按顺序等待成功后再启动应用容器。CNI 重试依据 sandbox 与网络的实际状态，避免一次失败后长期遗漏网络配置。PLEG 比较新旧 Pod 集合的并集，检测整个 sandbox 消失。原文中 RestartPolicy、状态错误处理和 Node 注册仍需补齐。</p>
+<p>UpdatePodStatus 接收完整 Pod 参数可以在客户端实现 status-only 请求。KUBELET-006 的全对象覆盖来自 fake API，保留为“不安全适配器”的辅助反例，后续验收要通过真实 HTTP 验证字段边界与并发 spec 写入。</p>
+<p>运行时的退出码来自等待/reap 或运行时状态记录；/proc/<pid>/status 不是退出码接口。netns 路径随进程死亡失效，应有独立生命周期。cgroup v2 按层委派，限制参数在进入容器前验证；PID namespace 的 clone 与 unshare 语义分别说明。真实 namespace、cgroup、runc 实验在本轮新建且核实身份的 KVM 内完成，清理后销毁。</pid></p>
+<p>CNI 原文的 veth 名称超过内核限制、短 ID 切片 panic 已在 guest 复现，Result 类型的匿名结构体标签不匹配由编译器检出。补查 §14.3 时发现 net.ParseCIDR 的返回值数量错误（CNI-009）；修正该调用并声明普通 nextIP/.1 网关假设后，/30 探针显示广播地址仍会被循环接受（CNI-010）。DEL 应容忍资源已不存在，CHECK 校验已声明的网络结果；IPAM 锁和 bridge 并发创建需给出实现。</p>
+<p>Proxy 的 Run().WithStdin 调用链编译失败，改用 Cmd.Stdin 后运行。--noflush 会重建本次声明的链，同时保留未声明的旧链；Service 删除后的残留链属于清理问题，日志中的顶层转发跳转已移除。多端口后端链需要按端口隔离或匹配，hairpin/返程 NAT 与内核网络条件在 nft/legacy 两个后端分别验收。跨节点实际实验确认：完整静态路由可保留 Pod 源地址，缺失返程路由导致超时，显式 SNAT 后请求恢复。链名长度和 hash 碰撞约束由待定义的 hash 实现承担。</p>
+<h2 id="证据与复验">证据与复验</h2>
+<p>普通用户态执行记录保存在 <code>evidence/logs/delivery/user-space/</code>。verify.sh 对七模块运行未缓存的 go test -json -race，51 个测试通过；IPAM、CNI、proxy 编译和 proto 生成四个预期失败检查均检出指定诊断。独立、有限的竞态探针实际执行 Informer.Run 与辅助 WaitForCacheSync，按预期捕获 DATA RACE。清单、文件完整性和 guest 身份保护拒绝路径同步检查。</p>
+<p>来源验证命令为 <code>python3 audit/evidence/verify_sources.py --online</code>，把本地文件与 SOURCES.txt 的固定 tag/commit URL 分别比较；普通离线复验使用校验和。网页快照按获取时点使用。</p>
+<p>本轮的正式 VM 证据在 <code>evidence/logs/delivery/fresh-vm/</code>。自动流程从新 overlay 和 cloud-init 启动两台 KVM，核对 UUID 后准备工具，完成 9 组内核/运行时/网络断言、7 组跨节点及清理断言、真实 CRI exitCode=42 与两台 guest 的最终清理。随后停止 VM 并删除临时磁盘、seed 和 SSH key，vm-delete.json 已确认目录删除。准备与复现命令见 <a href="../docs/VM-EXPERIMENTS.html">VM-EXPERIMENTS.md</a>。PENDING-001..006 保留历史编号，现均有审计结项结果，见 experiments.json。</p>
+<h2 id="第二阶段实施顺序与检查点">第二阶段实施顺序与检查点</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>模块</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>KV 持久化、CAS、历史与 watch 游标</td>
+<td>并发写/订阅不丢失；进程恢复后 revision 连续；压缩窗口正确</td>
+</tr>
+<tr>
+<td>2</td>
+<td>公共对象、API 和 RV 编码</td>
+<td>创建→GET/LIST/WATCH RV 一致；并发更新一个成功一个 409；identity 不漂移</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Watch endpoint、Informer、WorkQueue</td>
+<td>断线重建缓存和通知；失败重试到期触发；取消/退出无遗留 worker</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Scheduler、Node API</td>
+<td>重启重建账本；Pod 删除释放；重复事件不重复扣资源；绑定原子</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Kubelet + CRI</td>
+<td>在获批 VM 中实际运行 Pod；init 顺序、退出状态、节点心跳和失败重试</td>
+</tr>
+<tr>
+<td>6</td>
+<td>RS/Deployment/Endpoints</td>
+<td>lister 延迟无超建；删除后恢复；滚动更新满足可用性约束</td>
+</tr>
+<tr>
+<td>7</td>
+<td>CNI/Proxy</td>
+<td>获批 VM 内验证同节点、hairpin、多端口、删除规则与清理</td>
+</tr>
+<tr>
+<td>8</td>
+<td>跨节点及课程扩展</td>
+<td>两节点路由、NodePort、DNS、路径路由和声明的故障恢复</td>
+</tr>
+</tbody>
+</table></div>
+<p>每一模块先实现并通过运行验证，再编写对应的最终教程。黑盒测试器通过公开 API 与真实结果验收，故意错误实现用于验证检出能力。运行报告记录命令、断言、失败现场和清理结果，逐阶段交接。</p>
+<h2 id="第一阶段交付状态">第一阶段交付状态</h2>
+<p>第一阶段审计已完成，要求矩阵见 <a href="DELIVERY.html">DELIVERY.md</a>。102 条记录按分类和证据状态检索；6 项补充实验已结项，15 份固定来源通过本地/tag/commit 字节比较。下一阶段实现任务沿用上表，持久化恢复、完整进程集成和最终黑盒课程仍由相应实施阶段验收。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

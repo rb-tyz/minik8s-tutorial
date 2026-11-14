@@ -1,0 +1,63 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>P01：Pod 网络、静态路由与 ClusterIP · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="p01pod-网络静态路由与-clusterip">P01：Pod 网络、静态路由与 ClusterIP</h1>
+<p>范围来自原文 §14–15，修正依据为 CNI/PROXY 类审计记录及实践阶段的地址复用订正。
+机制与完整 Deployment→Service 流程已通过全新 KVM 验收，结果见
+<a href="../progress/P01-I01.html">P01/I01</a>。教学任务见
+<a href="../../tutorial/09-pod-network-service.html">tutorial/09-pod-network-service.md</a>。</p>
+<h2 id="cni-子集">CNI 子集</h2>
+<p><code>mini-cni</code> 支持 CNI 0.4.0 的 VERSION/ADD/DEL/CHECK。配置示例：</p>
+<pre><code class="language-json">{"cniVersion":"0.4.0","name":"minik8s","type":"mini-cni",
+ "bridge":"mk8s0","vmID":"&lt;approved-VM-UUID&gt;",
+ "ipam":{"subnet":"10.244.0.0/24","stateFile":"/var/lib/minik8s/cni/allocations.json"}}
+</code></pre>
+<p>使用标准 CNI_COMMAND、CNI_CONTAINERID、CNI_NETNS、CNI_IFNAME 环境变量及 stdin/stdout JSON。
+本 MVP 接受 <code>/run/netns/&lt;name&gt;</code> 或 <code>/var/run/netns/&lt;name&gt;</code> 下的命名 namespace，
+不提供任意 namespace 路径、chaining、自定义 IPAM range 或 DNS 配置。containerd 另用发行版
+loopback 插件；本插件负责单个 bridge/veth 网络。</p>
+<ul>
+<li>IPv4 子网前缀 /16–/30，保留网络地址、广播地址与网关（首个地址）；从第二个地址起分配。</li>
+<li>同一节点共用一个 stateFile；文件锁覆盖 bridge 初始化、分配及链接配置。配置不变时，
+  同一个 container ID 取回相同地址。接口名使用 ID 摘要，长度小于 16，支持短 ID。</li>
+<li>分配先写临时文件、同步、rename，再配置网络。失败时尝试删除 veth 并释放地址；
+  无法确认链接已删除时保留占用，交给 DEL 重试，避免把在用地址重新分配。</li>
+<li>bridge 配网关，veth host 端加入 bridge 并启用 hairpin；peer 移入 namespace，设置
+  地址、默认路由、接口与 loopback。Linux 操作通过 ip/bridge 命令完成。</li>
+<li>Pod 接口 MAC 按 IPv4 生成稳定的本地管理单播地址（02:00 加四字节 IP），网关同样固定；
+  地址复用后，已有 ARP 映射仍能用于新接口。独立实现也可采用其他经过复用测试的邻居刷新方案。</li>
+<li>CHECK 核对分配、host veth 的 bridge 归属、namespace 地址/掩码、接口 UP 和默认网关。</li>
+<li>DEL 接受 namespace 已消失和重复调用，删除本 ID 的 veth、释放地址；共享 bridge 继续保留。</li>
+<li>ADD/DEL/CHECK 在执行前核验配置中的 VM UUID 和 KVM 类型；VERSION 是普通查询。</li>
+</ul>
+<h2 id="proxy-与-vip-分配">Proxy 与 VIP 分配</h2>
+<p>每个节点运行一个 <code>mini-proxy --server &lt;API&gt; --vm-id &lt;UUID&gt; --service-cidr 10.96.0.0/24</code>。
+全群指定一个 proxy 分配 VIP，其余节点增加 <code>--observer-only</code>，只发布已分配 Service 的规则。
+只有分配者写入空 ClusterIP；各节点都监听 Service/Endpoints 并读取最新集合：</p>
+<ol>
+<li>对没有 ClusterIP 的 ClusterIP Service，从指定 IPv4 池按顺序分配空闲地址；通过 RV
+   条件 PUT 发布。重启后从已有 Service 重建占用。重复显式 VIP 或池耗尽时报告错误。</li>
+<li>按 namespace/name 关联 Endpoints，再按 Service port 的名称与 protocol 区分后端；
+   忽略 NotReadyAddresses，旧 Service UID 的自动 Endpoints 也不参与转发。</li>
+<li>为新连接用 1/N、1/(N-1)、…、1 的概率选择后端，执行 DNAT。</li>
+<li>对 Service 流量使用保留标记 0x4000，POSTROUTING 据此 MASQUERADE，支持 hairpin。
+   后端观察到的 Service 客户端地址可能是节点 bridge 地址。</li>
+</ol>
+<p>规则只使用 M8S-SERVICES、M8S-MASQ 两个自有链，把原文的子链跳转展开为按端口的 DNAT
+规则，避免遗留旧 Service/endpoint 链。iptables-restore --noflush 提交自有链，
+PREROUTING/OUTPUT/POSTROUTING 的跳转逐项检查；正常退出移除这些跳转和自有链。
+其他链保持原样，已通过 VM 的 foreign chain 保留断言。</p>
+<p>所有多端口 Service 的 port 都需有唯一名称，避免端口分组歧义。None/headless 不分配 VIP，
+NodePort 不在本轮实现范围。没有就绪后端时不发布 DNAT，连接可超时。本轮仅在 Debian
+iptables nf_tables 后端运行；静态路由双节点的验收见 <code>docs/progress/ALIGNMENT.md</code>，
+其他后端的参考实现集成继续另行验证。</p>
+<h2 id="运行条件与恢复范围">运行条件与恢复范围</h2>
+<p>内核需要 ip_forward=1 与 bridge netfilter；runner 在已核实的 guest 中准备这些条件。
+所有网络命令都在获批 KVM 内执行，普通单元测试通过命令 runner 替身检查算法与错误路径。</p>
+<p>规则更新影响后续新连接，已有连接由内核 conntrack 处理。Pod Ready、Endpoints 和 proxy
+规则分别异步更新；当前 MVP 提供有界重试后的收敛，不包含连接排空或零中断流量保证。
+CNI 配置过程中被 SIGKILL 等未覆盖故障不加入已通过范围。</p>
+<h2 id="原文-144-的跨节点环境">原文 §14.4 的跨节点环境</h2>
+<p>节点分别配置不同 PodCIDR，例如 node1=10.244.1.0/24、node2=10.244.2.0/24，CNI 配置中的
+subnet 与之对应。各 VM 有自己的 IPAM 状态文件。guest 间实验链路地址分别为 10.200.0.11
+和 10.200.0.12，guest 内为对端 PodCIDR 配置 next-hop 为对端节点的静态路由。</p>
+<p>此时直接 PodIP 通信依靠路由转发，Service 仍由各节点自己的 DNAT/SNAT 规则处理。
+路由与 CIDR 由提供的环境设施配置，不引入 overlay、BGP、自动路由控制器或分布式 IPAM。
+双节点运行入口为 reference/tests/vm/run.py --two-node，输入与清理方式沿用原 runner。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

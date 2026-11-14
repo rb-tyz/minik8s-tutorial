@@ -1,0 +1,72 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>运行时语义练习：退出、init、环境变量与 hostPath · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="运行时语义练习退出init环境变量与-hostpath">运行时语义练习：退出、init、环境变量与 hostPath</h1>
+<p>配合 06 章。先按 <a href="environment.html">environment</a> 核对 VM_UUID，启动实际节点；工作目录为
+<code>/root/course</code>，共用 <a href="workloads.html">workloads</a> 的 API/CORE/WORK 和等待函数。本页的文件
+创建与容器操作全部在本次 guest 中进行。</p>
+<h2 id="c1退出码与阶段">C1：退出码与阶段</h2>
+<p>从普通 Pod 示例构造一次性任务：</p>
+<pre><code class="language-bash">jq '.metadata.name="course-exit" | .spec.restartPolicy="Never" |
+    .spec.containers[0].args=["exit","42"]' tutorial/examples/pod.json &gt; "$WORK/exit.json"
+curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @"$WORK/exit.json" "$CORE/pods" &gt; "$WORK/exit-created.json"
+wait_json "$CORE/pods/course-exit" '.status.phase=="Failed" and .status.containerStatuses[0].exitCode==42'
+</code></pre>
+<p>把 42 改为 0、使用新对象名再试，应 Succeeded。检查 CRI inspect 的 exitCode 与 API 相同。
+OnFailure 在非零退出后增加 attempt；Always 在零/非零退出后都会重试。测试时先保留 Never
+样本，再分别用新的名字/策略，观察 restartCount，最后删除对象。</p>
+<h2 id="c2init-顺序环境变量与共享目录">C2：init 顺序、环境变量与共享目录</h2>
+<p>hostPath 使用节点已经存在的目录。本次新建的目录只供此练习，容器中映射到 /work：</p>
+<pre><code class="language-bash">HOST_DIR=$(mktemp -d /tmp/course-volume.XXXXXX)
+jq --arg path "$HOST_DIR" '
+  .metadata.name="course-init" | .spec.restartPolicy="Never" |
+  .spec.volumes=[{name:"data",hostPath:{path:$path,type:"Directory"}}] |
+  .spec.initContainers=[
+    {name:"check-env",image:"minik8s.local/fixture:n01",command:["/fixture"],
+     args:["env","CHECK","value"],env:[{name:"CHECK",value:"value"}]},
+    {name:"prepare",image:"minik8s.local/fixture:n01",command:["/fixture"],
+     args:["write","/work/initialized","done"],volumeMounts:[{name:"data",mountPath:"/work"}]}] |
+  .spec.containers[0].args=["require","/work/initialized","done"] |
+  .spec.containers[0].volumeMounts=[{name:"data",mountPath:"/work"}]' \
+  tutorial/examples/pod.json &gt; "$WORK/init.json"
+curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @"$WORK/init.json" "$CORE/pods" &gt; "$WORK/init-created.json"
+wait_json "$CORE/pods/course-init" \
+  '.status.phase=="Running" and (.status.initContainerStatuses|length)==2 and all(.status.initContainerStatuses[];.state=="Terminated" and (.exitCode//0)==0)'
+[[ $(cat "$HOST_DIR/initialized") == done ]]
+</code></pre>
+<p>第一个 init 检查 env 后退出 0，第二个写文件后退出 0，应用确认文件内容后保持运行。
+fixture 的 require 成功会继续等待，不是一次性退出命令。Never 仍允许正在运行的应用保留。
+把第一个 init args 改为 <code>["exit","42"]</code>、以新名字提交，应 Failed，应用状态列表为空，
+且实际 CRI 中没有创建应用容器。</p>
+<h2 id="c3只读映射">C3：只读映射</h2>
+<pre><code class="language-bash">jq '.metadata.name="course-readonly" | .spec.initContainers=[] |
+    .spec.containers[0].args=["write","/work/forbidden","x"] |
+    .spec.containers[0].volumeMounts[0].readOnly=true' "$WORK/init.json" &gt; "$WORK/readonly.json"
+curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @"$WORK/readonly.json" "$CORE/pods" &gt; "$WORK/readonly-created.json"
+wait_json "$CORE/pods/course-readonly" '.status.phase=="Failed" and .status.containerStatuses[0].exitCode==2'
+[[ ! -e $HOST_DIR/forbidden ]]
+</code></pre>
+<p>CRI config 的 mounts 应有 readonly=true。目录来自节点，Pod 删除后目录内容仍在；不同节点
+同一路径互相独立。本课程的卷准备限于已有 File/Directory 的检查与映射。</p>
+<h2 id="c4限额与安全配置">C4：限额与安全配置</h2>
+<p>普通示例 CPU=50、memory=64 MiB。通过 CRI exec（或单独一次性 security 容器）运行
+<code>/fixture security</code>，读取 cpu.max、memory.max、pids.max 及 /proc/self/status。期待
+<code>5000 100000</code>、<code>67108864</code>、<code>512</code>、Seccomp=2、CapEff=0x400。CPU shares 是竞争权重，
+quota 才是硬上限；通过实际 cpu.max 核对硬上限。已运行样本见第二阶段 runtime-proof.json。</p>
+<p>在本页的 course-init 仍 Running 时，可以查询其 ID 后执行：</p>
+<pre><code class="language-bash">CID=$(curl -fsS --max-time 5 "$CORE/pods/course-init" | \
+  jq -r '.status.containerStatuses[0].containerID|split("://")[1]')
+crictl --runtime-endpoint unix:///run/containerd/containerd.sock --timeout 10s \
+  exec "$CID" /fixture security &gt; "$WORK/security.txt"
+cat "$WORK/security.txt"
+</code></pre>
+<p>冷镜像实验由双节点 runner 提供本地只读 OCI registry：先返回 503，等待 RuntimeError，
+再恢复，读到独有 /pull-proof；随后离线使用缓存。实现任务是处理 CRI 镜像查询/拉取/失败，
+registry 是测试依赖，具体记录见 <a href="../../docs/progress/ALIGNMENT.html">对齐验收</a>。</p>
+<h2 id="清理">清理</h2>
+<pre><code class="language-bash">for name in course-exit course-init course-readonly; do
+  curl -fsS --max-time 5 -X DELETE "$CORE/pods/$name"
+done
+</code></pre>
+<p>本次额外创建的变体同样逐一删除。等待对应 API 对象与 CRI sandbox/container 消失后，删除
+HOST_DIR；记录保存在 WORK。再按环境页停止组件和销毁 VM。不要提前删仍被应用使用的目录。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

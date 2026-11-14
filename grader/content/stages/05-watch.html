@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 5：把对象变化推送给客户端 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-5把对象变化推送给客户端">小节 5：把对象变化推送给客户端</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在本小节，你要为 API 加上 Watch。客户端发起一次长连接请求，就能持续收到对象的新增、
+修改和删除事件，后面的 kubelet、调度器和控制器会用它及时发现变化。对应教程第 10 节。</p>
+<h2 id="先读现状再接收变化">先读现状，再接收变化</h2>
+<p>一个客户端可以先 List，记住快照的 resourceVersion，再从该版本开始 Watch：</p>
+<pre><code class="language-text">List 返回快照版本 10
+版本 11：另一个客户端创建 Pod
+Watch 从版本 10 续接 → 收到版本 11 的事件
+</code></pre>
+<p>即使版本 11 的写入发生在 List 返回之后、Watch 建立之前，也要补发它。
+HTTP 层应沿用 KV 的版本顺序，将历史事件与后续实时事件接起来。</p>
+<p>例如下面的请求会读取版本 10 之后的 Pod 变化：</p>
+<pre><code class="language-bash">curl -N "$API/api/v1/namespaces/demo/pods?watch=true&amp;resourceVersion=10"
+</code></pre>
+<p>这里的版本号用于说明续接方式，实际请求应使用你 List 得到的快照版本。</p>
+<h2 id="初次订阅如何知道已经读完">初次订阅如何知道已经读完？</h2>
+<p>缺省 resourceVersion 的 Watch 先发送当前对象的 ADDED 事件，再发送一个 BOOKMARK，
+标记初始快照结束，之后继续发送变化。创建快照和接续实时流时，需要保住两者之间的边界。</p>
+<p>响应使用 NDJSON，每行一个 JSON 事件。发送后及时刷新缓冲区，客户端才能持续读取。
+删除事件要保留被删对象的完整内容，并使用删除这次提交的版本。</p>
+<h2 id="测试如何运行">测试如何运行</h2>
+<ul>
+<li><code>WATCH-REPLAY</code>：在 List 与 Watch 之间写入，检查补发和删除对象内容。</li>
+<li><code>WATCH-INITIAL</code>：已有对象的 ADDED 在 BOOKMARK 之前，之后能收到删除事件。</li>
+<li><code>WATCH-INVALID</code>：非法 resourceVersion 立即返回 HTTP 422。</li>
+</ul>
+<p>测试器会保持 curl 长连接，在另一请求中修改对象，并等待对应事件。协议细节见
+<a href="../../../docs/contracts/api.html#resourceversion-%E5%A5%91%E7%BA%A6">Watch 契约</a>。</p>
+<h2 id="提示">提示</h2>
+<p>先用终端观察一条事件，再尝试连续写入和断线重连。客户端断开时取消订阅，回收等待中的
+协程。位置过旧时沿用教程约定的重新 List 流程。</p>
+<h2 id="按-stage-提交">按 stage 提交</h2>
+<p>本小节分为 5 个 stage。先查看第一项任务：</p>
+<pre><code class="language-bash">minik8s stage 5.1
+</code></pre>
+<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
+临时练习时指定完整编号，例如：</p>
+<pre><code class="language-bash">minik8s submit --stage 5.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

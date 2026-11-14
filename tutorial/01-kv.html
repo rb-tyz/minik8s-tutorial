@@ -1,0 +1,204 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>01 单机 KV：把一次写入变成可恢复的事实 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="01-单机-kv把一次写入变成可恢复的事实">01 单机 KV：把一次写入变成可恢复的事实</h1>
+<p>模块：<strong>基础层 Core / 存储</strong>。原文 §8，订正对应 KV 类记录。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>用 Go 的 map、互斥锁、字节切片和文件 I/O 实现单机存储。完成后，你应能解释一次写入
+何时算成功、两个写者如何检测冲突，以及进程重启后怎样恢复对象和版本。</p>
+<p>需要掌握 map 读写、slice 的共享底层数组、error、Mutex 和文件的 Write/Sync/Truncate。
+这里的 value 是普通字节；Pod、Node 等对象由下一章编码，本章不用理解它们。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>API Server 把所有对象保存在一个 KV 中。控制器通过 API 读写对象，存储负责决定这些写入
+的先后顺序。真实 Kubernetes 的这个位置通常由 etcd 承担；本课程把它缩成进程内的一个库。</p>
+<p>设键 a 初次写入得到版本 1，更新 a 得到 2，创建 b 得到 3。现在 a 的最后修改版本是 2，
+整个存储的快照版本是 3。二者用途不同：前者保护单个对象更新，后者作为 List/Watch 边界。</p>
+<pre><code class="language-text">HTTP handler -&gt; KV 条件检查 -&gt; 追加并同步日志 -&gt; 更新 map -&gt; 返回
+                                      |
+                                   重启时重放
+</code></pre>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<p>接口可以用自己的 Go 类型表达，但至少提供以下能力：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>操作</th>
+<th>输入</th>
+<th>输出与条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Get</td>
+<td>key</td>
+<td>value、createRevision、modRevision 的副本；不存在时报错</td>
+</tr>
+<tr>
+<td>Range</td>
+<td>prefix</td>
+<td>按 key 排序的条目副本、同一快照的全局 revision</td>
+</tr>
+<tr>
+<td>Put</td>
+<td>key、value、condition</td>
+<td>成功提交后的条目；保存输入切片的副本</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td>key、condition</td>
+<td>删除前条目；不存在时失败</td>
+</tr>
+<tr>
+<td>Open/Close</td>
+<td>日志路径 / 实例</td>
+<td>恢复、同步、关闭；Close 可重复调用</td>
+</tr>
+</tbody>
+</table></div>
+<p>condition 有三种：无条件；键必须不存在；键的 modRevision 必须等于 X。最后一种就是
+CAS（compare-and-swap）：只有读后未被别人修改，写入才成功。X 必须是正数。</p>
+<p>参考签名、错误类别和限制见 <a href="../docs/contracts/kv.html">KV 契约</a>。私有日志格式不属于
+黑盒接口；参考实现每条记录最多 4 MiB，API 也相应限制单对象大小。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="内存与版本">内存与版本</h3>
+<p>维护一个 <code>map[string]Entry</code>、全局 revision 和一把 mutex。Entry 包括 key、value、
+createRevision、modRevision。创建键时两个版本相同；覆盖只改变 modRevision；删除后
+同名重建得到新的 createRevision。</p>
+<pre><code class="language-text">Put(key, value, expect):
+  加锁
+  检查关闭/故障状态和 expect
+  生成 next = revision + 1 的完整记录
+  追加日志并同步
+  安装 value 的副本，更新 revision
+  返回条目副本，解锁
+</code></pre>
+<p>Delete 也占用一个新 revision，但其返回条目的 modRevision 是删除前版本。下一章 API
+删除响应使用它，Watch 则另外使用本次删除提交的版本。</p>
+<p>Range 在同一个锁范围内复制匹配项并读取 revision。若存储版本为 9，前缀下最后一个对象
+的 modRevision 为 6，List 的快照版本仍是 9；删除也会改变集合，所以不能用最大 item RV
+替代快照版本。</p>
+<h3 id="日志与恢复">日志与恢复</h3>
+<p>先设计可完整识别的一条记录，再写恢复器。记录应能表达操作、key、value 和提交版本，
+并能区分完整记录与尾部半写。简单的长度帧加校验和是一种做法。</p>
+<p>参考格式在契约中展开：头部包含 magic、length 和头部 CRC，另有 payload CRC。头部
+CRC 用来识别被破坏的长度，否则中段损坏可能被误判为“尾部还没写完”。具体字节编码
+可以不同，课程要求的是相同的恢复行为。</p>
+<p>重启从头扫描：完整且合法的记录按顺序应用；末尾确实缺字节时截断到上一条完整记录；
+完整记录校验失败、版本不连续或操作语义错误时报告位置并保留文件。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>条件检查、版本分配、持久化和内存更新放在同一个锁顺序里。两个线程都拿着 RV=4 更新同一
+键时，第一个提交为 5；第二个检查时看到 5，返回冲突。失败 CAS 不消耗版本。</p>
+<p>成功响应前同步日志。若 write、短写或 Sync 失败，参考实现尝试截回提交前长度并同步，
+当前可见 map/revision 保持原样。回滚也失败时禁用后续写入，保留读取，并等待重新打开恢复。
+错误返回时，调用方记录并重新读取；不要假定失败前的外部副作用一定没有发生。</p>
+<p>Get、Range 和 Put 返回值都复制 value。否则调用方改一段 slice，就会绕过锁和日志修改
+存储。相同内容的 Put 仍产生新版本；抑制“状态未变”的写入放到 API/控制器层。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>本课程是单进程、单键 CAS、内存索引和一个追加日志。真实存储还涉及分布式一致性、事务、
+租约和更多维护操作。本模块不增加 Raft 或存储 RPC；API Server 独占日志文件。</p>
+<p>持锁做磁盘 I/O 使实现容易推理，吞吐量会受到同步写入延迟影响。日志长期增长、压缩与更复杂
+的存储引擎可以另行研究；本课程先完成上述提交和恢复语义。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>编写内容</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>K1 内存操作</td>
+<td>Entry、Get/Put/Delete、深拷贝</td>
+<td>修改输入/返回切片不影响存储</td>
+</tr>
+<tr>
+<td>K2 版本</td>
+<td>全局版本、create/modRevision、三种 condition</td>
+<td>并发相同 RV 恰好一个成功</td>
+</tr>
+<tr>
+<td>K3 快照</td>
+<td>Range 与排序</td>
+<td>条目和快照 RV 在同一锁内取得</td>
+</tr>
+<tr>
+<td>K4 持久提交</td>
+<td>记录编码、追加、Sync、回滚</td>
+<td>失败不发布新状态；回滚失败可停止写入</td>
+</tr>
+<tr>
+<td>K5 恢复</td>
+<td>顺序扫描、截断尾部、损坏报告、Close</td>
+<td>确认写入后强杀重启仍能读回</td>
+</tr>
+</tbody>
+</table></div>
+<p>先完成 K1–K3，再加入文件；先用少量可手算的序列验证，再增加并发。为后续 Watch 留出一个
+统一的“提交成功”位置，但本章先不设计订阅者。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>自行实现时按下列输入写测试；参考结果可从仓库根目录复查：</p>
+<pre><code class="language-bash">cd reference
+go test -race -count=1 ./internal/kv
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>输入或故障</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Put a、覆盖 a、Put b、Range a</td>
+<td>a.mod=2；List 快照 RV=3</td>
+</tr>
+<tr>
+<td>相同内容再次 Put</td>
+<td>版本增加一次</td>
+</tr>
+<tr>
+<td>两个线程使用同一 modRevision</td>
+<td>一个成功、一个冲突</td>
+</tr>
+<tr>
+<td>Range 无匹配项</td>
+<td>空集合，但仍有当前全局版本</td>
+</tr>
+<tr>
+<td>改动返回切片</td>
+<td>再 Get 的内容不变</td>
+</tr>
+<tr>
+<td>删除后重建同名键</td>
+<td>createRevision 更新</td>
+</tr>
+<tr>
+<td>成功响应后 SIGKILL，再 Open</td>
+<td>确认的数据和版本存在</td>
+</tr>
+<tr>
+<td>截掉最后一帧末尾</td>
+<td>恢复最后完整状态，截掉半帧</td>
+</tr>
+<tr>
+<td>破坏中间完整帧</td>
+<td>拒绝恢复，错误含偏移，原文件保留</td>
+</tr>
+<tr>
+<td>注入短写/Sync/回滚失败</td>
+<td>当前状态不变，错误和后续写入策略符合契约</td>
+</tr>
+</tbody>
+</table></div>
+<p>故障注入适合检查错误分支；进程强杀与实际文件恢复补充持久性证据。已经通过的恢复实验
+见 <a href="../docs/progress/K01.html">K01 记录</a>，本轮汇总见 <a href="../docs/progress/ALIGNMENT.html">对齐验收</a>。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>先改 map 再写日志，会让失败后读取到未提交状态；在锁外检查 CAS，会让两个写者都成功。
+恢复时跳过损坏帧，则可能留下无法解释的后续版本。</p>
+<p>排查时打印操作、预期 RV、当前 RV、日志偏移和结果。用固定序列手算版本，再比较输出。
+只复制 Entry 结构体而没复制 Value 的底层数组，是切片隔离测试失败的常见原因。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §8；<a href="../audit/ERRORS.html">审计问题清单</a> 中 KV 类条目。</li>
+<li><a href="../docs/contracts/kv.html">KV 契约</a> 给出参考接口、帧格式和错误行为。</li>
+<li>下一步：<a href="02-api.html">02 API</a>，把字节值包装成带身份和版本的对象。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

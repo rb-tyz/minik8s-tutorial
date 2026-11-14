@@ -1,0 +1,35 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.1：运行已绑定的 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-61运行已绑定的-pod">Stage 6.1：运行已绑定的 Pod</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>读取分配给本节点的 Pod，创建实际应用容器并上报运行状态。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本阶段实现 kubelet，也就是在一个节点上负责运行 Pod 的组件。Pod 是对“运行哪些容器”的描述：
+<code>spec</code> 保存期望配置，<code>status</code> 保存观察结果。kubelet 读取分配给本节点的 Pod，调用前两节的
+运行时接口，再把结果写回 API。</p>
+<p>测试器调用 <code>./test-hooks/start node /tmp/course-run/work/lifecycle</code>，由你的脚本启动 API 和
+kubelet。随后它创建已经填写 <code>spec.nodeName</code> 的 Pod，并等待结果。这里使用节点网络，Pod 网络
+在第九小节实现。本节在实验 KVM 内运行，测试程序和镜像由实验环境准备。</p>
+<h2 id="先让测试器找到节点">先让测试器找到节点</h2>
+<p>kubelet 启动后，先在 API 登记一个 Node，并上报 Ready 条件。例如 Node 名为 node-a：</p>
+<pre><code class="language-json">{"metadata":{"name":"node-a"},"status":{"capacity":{"cpu":2000,"memory":1073741824},"allocatable":{"cpu":2000,"memory":1073741824},"conditions":[{"type":"Ready","status":"True"}]}}
+</code></pre>
+<p>capacity 是总资源，allocatable 是可分配资源。测试器先 GET <code>/api/v1/nodes</code> 找到 Ready=True
+的节点，然后创建一个 nodeName 指向该节点的 Pod。</p>
+<p>Pod 的应用配置包含镜像 minik8s.local/fixture:n01、command=["/fixture"]、args=["pause"]。
+kubelet 应创建 sandbox 与应用容器，再写回 Pod.status。测试等待 phase=Running，且
+containerStatuses 中有一个应用记录和真实 containerID。</p>
+<p>它随后使用 crictl 按这个 ID 查询运行时，要求实际状态也是 CONTAINER_RUNNING。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>先完成 Node 登记与一个已绑定 Pod 的调谐：读 Pod，匹配本节点名，调用运行时启动任务，
+查询结果并更新 /status。把 Pod UID、sandbox ID、container ID 的关联保存下来，供后续
+查询、删除和重启接管使用。</p>
+<p><a href="../stages/06-kubelet.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>NODE-RUN</code>：API 报告 Running，独立 CRI 查询也显示容器正在运行。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 6.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

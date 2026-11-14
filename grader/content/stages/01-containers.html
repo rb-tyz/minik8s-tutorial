@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 1：运行你的第一个容器 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-1运行你的第一个容器">小节 1：运行你的第一个容器</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在本小节，你要让一个 Linux 进程在独立的容器环境中运行。它应当拥有自己的根目录、
+进程编号和网络视图，并受到 CPU、内存和进程数量限制。</p>
+<p>后面的 kubelet 最终也要完成这件事。先把单个容器跑起来，便于你观察这些限制究竟由什么提供。
+对应教程第 6 节。</p>
+<h2 id="容器里的进程能看到什么">容器里的进程能看到什么？</h2>
+<p>假设你在普通终端运行一个程序，它会看到所在节点的文件系统、进程和网络接口。
+namespace 可以改变其中某一种视图：PID namespace 改变进程编号与可见进程，mount namespace
+用于组织独立的挂载视图，network namespace 提供独立的网络栈。根目录还需要单独设置。</p>
+<p>测试会提供一个小程序 <code>/fixture</code>。把它作为容器入口启动后，它应当在容器里看到自己的 PID 为 1，
+并从提供的 rootfs 访问文件。运行时适配器向测试器返回的 PID 则是节点侧看到的 PID，
+测试器会用它读取实际的 <code>/proc</code> 信息。</p>
+<pre><code class="language-text">节点侧：运行时返回 PID 2451
+容器侧：同一进程看到自己的 PID 为 1
+</code></pre>
+<p>这里的编号只是示例，测试会检查你本次创建的真实进程。</p>
+<h2 id="限制资源并保留退出码">限制资源，并保留退出码</h2>
+<p>namespace 决定进程看到什么，cgroup 用来限制资源。测试预设 CPU 为 50 毫核、内存为
+64 MiB、进程数上限为 512，还会检查 seccomp 和允许的 capability。具体输入见
+<a href="../../docs/ADAPTER.html#stage-1">Stage 1 适配协议</a>。</p>
+<p>程序退出后，运行时需要保留它的退出码。例如 <code>/fixture exit 42</code> 结束后，应当能得到 42。
+停止或重置容器时，还要回收本次创建的进程和运行资源。</p>
+<h2 id="测试如何运行">测试如何运行</h2>
+<p>测试器通过 <code>container-run</code> 启动任务，读取实际 PID、namespace 和内核限制，然后验证退出与清理：</p>
+<ul>
+<li><code>CONTAINER-ISOLATION</code>：进程隔离、容器根目录与 PID 对应关系。</li>
+<li><code>CONTAINER-LIMITS</code>：实际 cgroup、seccomp 和 capability 设置。</li>
+<li><code>CONTAINER-EXIT</code>：等待任务并取得退出码 42。</li>
+</ul>
+<h2 id="提示">提示</h2>
+<p>可以先让 <code>/fixture pause</code> 持续运行，观察 <code>/proc/&lt;pid&gt;/ns/</code>，再逐项加入资源限制。
+你可以复用 runc；运行时包装、参数传递和清理行为需要由你的实现完成。
+本小节在准备好的可销毁 KVM 内运行，环境与 fixture 由实验设施提供。</p>
+<h2 id="按-stage-提交">按 stage 提交</h2>
+<p>本小节分为 5 个 stage。先查看第一项任务：</p>
+<pre><code class="language-bash">minik8s stage 1.1
+</code></pre>
+<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
+临时练习时指定完整编号，例如：</p>
+<pre><code class="language-bash">minik8s submit --stage 1.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

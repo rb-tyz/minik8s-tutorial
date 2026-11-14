@@ -1,0 +1,54 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>C01：Informer 与 WorkQueue · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="c01informer-与-workqueue">C01：Informer 与 WorkQueue</h1>
+<p><code>reference/internal/informer</code> 把 HTTP List/Watch 转为可并发读取的缓存；
+<code>reference/internal/workqueue</code> 为控制器提供按 key 去重的任务队列。两者只使用标准库。</p>
+<h2 id="缓存与通知">缓存与通知</h2>
+<p><code>informer.New(source, resource, namespace, Options)</code> 返回一个单次运行的 Informer。
+<code>source</code> 由 <code>*client.Client</code> 实现；namespace 为空时订阅全部 namespace。
+<code>Run(ctx)</code> 持续运行到取消，重复调用返回错误。<code>WaitForSync(ctx)</code> 等待首次 List 安装
+及其通知完成，<code>HasSynced()</code> 表示曾经完成首次同步。断线时保留上次缓存，同步标志
+继续为 true；它表示初始化完成，连接健康需要另行观察错误回调。</p>
+<ul>
+<li><code>Get(key)</code> 返回对象副本与存在标志。</li>
+<li><code>List()</code> 按 key 排序返回对象副本。</li>
+<li><code>ResourceVersion()</code> 返回已应用的游标。</li>
+<li><code>Key(obj)</code> 为 namespaced 对象生成 <code>namespace/name</code>，Node 使用 name。</li>
+<li><code>Options.OnEvent(Event)</code> 串行接收 ADDED、MODIFIED、DELETED，Old/New 也是副本。
+  缓存在回调前已更新。回调应快速入队，允许查询缓存；回调中等待本次 Run 退出会阻塞自身。</li>
+<li><code>Options.OnError(error)</code> 报告失败；<code>RetryDelay</code> 默认 100ms，重试等待支持取消。</li>
+</ul>
+<p>首次 List 原子替换缓存，使用 list RV 作为下一次 Exact Watch 的起点。事件通过校验后，
+缓存与游标一起更新。BOOKMARK 推进游标；重复或更旧的帧被忽略。删除、同名重建分别通知，
+同名且 UID 改变时先 DELETED 后 ADDED。重新 List 会通知断线期间遗漏的删除和更新；
+UID 与对象 RV 都未改变时不重复通知。</p>
+<p>普通 EOF 或握手连接失败从最后已应用 RV 重连；410、503 和非法事件重新 List。
+List 失败保留缓存并重试。每次连接都由 Informer 调用 <code>Watch.Stop()</code>，等待读流结束。
+JSON 解码失败终止当前连接并从已应用 RV 重试，重复遇到格式错误会持续上报。</p>
+<p><code>api.ObjectList</code> 增加 <code>GetListMeta()</code> 和 <code>GetObjects()</code>；六种 List 都实现，后者返回副本。
+List 对象必须有合法的 snapshot RV，各 item RV 为正且不超过 snapshot RV。</p>
+<h2 id="队列与重试">队列与重试</h2>
+<p><code>workqueue.New(Options)</code> 创建队列。<code>Add(key)</code> 对等待项去重，同一 key 正在处理时
+记录 dirty；<code>Done(key)</code> 之后再提供一次任务。不同 worker 可以并行处理不同 key。
+每次成功 <code>Get(ctx)</code> 都应有一次 <code>Done</code>；取消或 shutdown 返回 false。</p>
+<p><code>AddAfter(key, delay)</code> 按最早时间合并定时任务；<code>Add</code> 立即入队并取消该 key 的延迟。
+<code>AddRateLimited</code> 增加失败次数，延迟从 100ms 开始倍增，最多 30s，可通过 Options 修改。
+<code>Forget</code> 清除失败次数并取消延迟重试。延迟入队不会把正在处理的 key 分给第二个 worker。</p>
+<pre><code class="language-go">for {
+    key, ok := queue.Get(ctx)
+    if !ok { return }
+    if err := reconcile(ctx, key); err != nil {
+        queue.AddRateLimited(key)
+    } else {
+        queue.Forget(key)
+    }
+    queue.Done(key)
+}
+</code></pre>
+<p><code>ShutDown()</code> 丢弃等待项、取消所有定时器并唤醒 worker；已领取任务的执行与取消由 worker
+负责。队列和缓存都保存在进程内，重启后从 API List 重建。</p>
+<h2 id="验证">验证</h2>
+<pre><code class="language-bash">cd reference
+go test -race -count=1 -timeout=60s ./internal/informer ./internal/workqueue
+</code></pre>
+<p>单元测试覆盖副本隔离、差异通知、版本校验、去重、重试与退出；HTTP 测试覆盖 List→Watch
+间隙写入、EOF 续接、真实 Compact、503 错误帧、同名重建、重新 List 失败与取消。
+结果及日志见 <a href="../progress/C01-S01.html">C01-S01.md</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

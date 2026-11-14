@@ -1,0 +1,224 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>09 Pod 网络与 Service：从一根 veth 到一个虚拟 IP · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="09-pod-网络与-service从一根-veth-到一个虚拟-ip">09 Pod 网络与 Service：从一根 veth 到一个虚拟 IP</h1>
+<p>范围对应原文 §14–15 和 CNI/PROXY 订正，含 §14.4 的静态路由。本章机制已在新 KVM 中验证，教材覆盖对应关系见第 11 章。
+依赖前章已经能启动容器、报告 Pod 状态并生成 Endpoints。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>完成后，两个 Pod 应各有一个 IPv4 地址，能互相访问；客户端访问 Service 的 ClusterIP 时，
+内核把新连接转发到一个就绪后端。删除 Pod 或 Service 后，地址与规则逐步释放。</p>
+<p>前置知识：Go 的 map/JSON/文件、Linux 地址与路由、TCP/UDP 端口。下面会解释 bridge、veth、
+namespace、DNAT 的职责。实验环境由提供的 KVM runner 准备。执行网络命令前核对 VM UUID；
+宿主机上只做编译和普通测试。</p>
+<h2 id="2-先画出一条请求的路径">2. 先画出一条请求的路径</h2>
+<p>假设 Pod A=10.244.0.2，Pod B=10.244.0.3，bridge 网关=10.244.0.1：</p>
+<pre><code class="language-text">Pod A eth0 -- veth host A -- bridge -- veth host B -- Pod B eth0:8080
+                          |
+                  Service VIP:80 经 DNAT -&gt; Pod B:8080
+</code></pre>
+<p>network namespace 给 Pod 一套独立的接口、地址和路由视图。veth 是成对出现的虚拟网线，
+一端留在节点并接入 bridge，另一端成为 Pod 里的 eth0。bridge 类似一台虚拟交换机。</p>
+<p>Service VIP 不必绑到某个接口。iptables 在路由过程中识别 VIP:port，并把目的地址改为后端。
+内核通过 conntrack 记住这个连接的转换，返回报文再按记录反向转换。</p>
+<h2 id="3-固定-cni-输入与输出">3. 固定 CNI 输入与输出</h2>
+<p>容器运行时创建 sandbox namespace 后调用 CNI。配置通过 stdin JSON 输入，环境变量给出
+COMMAND、CONTAINERID、NETNS、IFNAME。ADD 成功输出 IP、掩码、网关及接口等 JSON；失败返回
+非零状态和错误 JSON。DEL 释放该 ID 的网络；CHECK 校验已声明的网络；VERSION 报告支持版本。</p>
+<p>配置和完整契约见 <code>docs/contracts/network-proxy.md</code>。本 MVP 使用 CNI 0.4.0、一个命名
+namespace、一个 bridge 和文件 IPAM。提供的 containerd 环境会传 <code>/var/run/netns/cni-…</code>。
+namespace 的挂载生命周期由运行时管理。<a href="labs/environment.html">环境练习</a> 给出实际配置。
+例如 stdin 的 ipam.subnet=10.244.0.0/24、bridge=mk8s0，ADD 返回分配的
+10.244.0.2/24、gateway=10.244.0.1，接口使用 CNI_IFNAME=eth0。CNI_NETNS 是已有
+sandbox 的命名路径，CONTAINERID 是调用方提供的唯一标识。结果包括 cniVersion、interfaces、
+ips（address/gateway/interface）与默认 routes；执行命令的日志写 stderr，stdout 留给 JSON。
+配置中的 vmID 和路径是参考环境参数，完整输入输出见 <a href="../docs/contracts/network-proxy.html">网络契约</a>。</p>
+<h2 id="4-实现文件-ipam">4. 实现文件 IPAM</h2>
+<p>先单独完成这一步，普通临时目录里就能测试：</p>
+<ol>
+<li>ParseCIDR 得到网络号与掩码，计算广播地址。IPv4 /30 例如 10.1.0.0–10.1.0.3：
+   .0 为网络地址，.1 为网关，.3 为广播，因此只分配 .2。</li>
+<li>保存 <code>container ID -&gt; IP</code> 的占用关系。同 ID 重试返回原地址，别的 ID 取最小空闲地址。</li>
+<li>为共享状态加进程间文件锁，覆盖读、分配、持久化与网络建立过程；并发调用共用同一配置。</li>
+<li>校验现有记录的范围与唯一性。内容损坏时报告错误，保留现场。</li>
+<li>用临时文件写入、fsync，再 rename 替换状态，再建立网络；DEL 删除该 ID 的记录后，地址可再次使用。</li>
+</ol>
+<p>具体文件格式可自行选择。公共验收关注唯一性、地址范围、重复 ADD、耗尽、释放与复用，
+不要求与参考实现相同的 JSON 文件。</p>
+<h2 id="5-完成-adddelcheck">5. 完成 ADD、DEL、CHECK</h2>
+<p>ADD 依次建立下列状态，命令中的名字与地址来自配置和分配结果：</p>
+<pre><code class="language-text">ensure bridge exists -&gt; gateway/prefix on bridge -&gt; bridge UP
+create veth pair -&gt; host end joins bridge -&gt; host end UP/hairpin on
+move peer to named namespace -&gt; rename peer to eth0
+address/prefix on eth0 -&gt; eth0 and lo UP -&gt; default route via gateway
+</code></pre>
+<p>可以使用 netlink 库，也可以像参考实现一样执行 ip/bridge 命令；两者操作的是同一批 Linux
+对象。接口名应稳定、短于 16 字节，短 container ID 也要可用。已有完好状态重复 ADD 时
+返回原结果，残缺状态应修复或报告错误。</p>
+<p>失败时清理本次 veth，再释放地址。删除失败、无法确认地址已不再使用时，保留占用以供
+DEL 重试。DEL 在 namespace 已消失时仍根据 ID 删除 host veth，peer 会随之消失；重复 DEL
+成功。共享 bridge 不随单个 Pod 删除。</p>
+<h3 id="地址复用还需要考虑-arp">地址复用还需要考虑 ARP</h3>
+<p>同一子网内，IPv4 报文要先找到目的接口的 MAC。ARP 缓存保存 IP→MAC，bridge 再按 MAC
+转发。假设旧 Pod 用 10.244.0.2/MAC-A，新 Pod 复用 .2 却换成 MAC-B，其他节点或 Pod
+的缓存可能暂时仍指向 MAC-A。此时 IP、路由和 DNAT 都正确，请求仍会超时。</p>
+<p>本 MVP 采用一个简单办法：按 IPv4 地址生成稳定的本地管理单播 MAC，例如
+10.244.0.2→02:00:0a:f4:00:02。创建 veth 时设置 peer 的 address；网关也固定为其 IP
+对应的 MAC。IPAM 保证本节点地址唯一，因此同一网络内的接口 MAC 也唯一。其他实现可以
+采用能刷新旧邻居缓存的方案，但需在已有通信缓存、地址立即复用的条件下验证。</p>
+<p>在 VM 保留一个 bridge 端口，让客户端先访问旧 Pod，记录 <code>ip -j neigh</code>；删除旧 Pod，
+立即用相同 IP 创建新 Pod，再发请求。请求应成功，复用后的邻居映射应可用。这项故障及
+真实复现见 P01/I01 进度报告。</p>
+<p>CHECK 至少比较已分配 IP/掩码、veth 所属 bridge、接口是否 UP 和默认路由。可在 VM 中删掉
+Pod 默认路由，再执行 CHECK，确认它检出问题；随后恢复路由。只返回成功会让这项实验失败。</p>
+<h2 id="6-从-service-与-endpoints-生成转发规则">6. 从 Service 与 Endpoints 生成转发规则</h2>
+<p>复用前章解析好的 Endpoints。按 Service namespace/name 找到后端，再按端口名/protocol
+选择对应的地址和端口。一个 Service 的 80→8080、81→9090 应生成互相独立的规则。</p>
+<p>对一个有 N 个后端的 Service port，依次写概率 1/N、1/(N-1)、…、1 的 DNAT 规则。
+例如两个后端时，第一条以 1/2 概率命中，最后一条接收余下连接。选择发生在新连接上；
+同一条长连接继续使用内核已建立的映射。</p>
+<p>VIP 由全群指定的单个 proxy 从 Service 地址池中分配，用 API 的 RV 条件写回 Service。
+重启先 List 现有 Service，重建占用。地址池的网络/广播地址保留，从网络地址+1 起选择空闲 VIP。默认池为 10.96.0.0/24；
+重复显式 VIP 或地址耗尽时报告错误。其他节点只观察已分配地址（--observer-only），
+避免各自基于旧快照选择相同地址。
+本章只做 ClusterIP；headless 不发布 VIP，NodePort 留到扩展。</p>
+<h2 id="7-处理-hairpin-与旧规则">7. 处理 hairpin 与旧规则</h2>
+<p>当 A 通过 VIP 被选回 A 自己时，流量从同一 veth 返回，这就是 hairpin。bridge 端口应允许
+hairpin；Service 流量还需相应的源地址转换，使请求和回包按同一个连接路径返回。
+本 MVP 给 Service 流量打标记，在 POSTROUTING 做 MASQUERADE；后端可能看到 bridge 地址。</p>
+<p>每次更新先在内存构建完整自有规则，用 iptables-restore 提交。保持其他程序的链与规则，
+删除不再声明的后端。参考实现只维护两个自有链，把 per-Service 子链展开成 DNAT 规则；
+也可沿用原文的分层链，但需要清理旧链。正常退出撤销自有跳转和链。</p>
+<h2 id="8-接上控制循环与运行时">8. 接上控制循环与运行时</h2>
+<p>将 CNI 配置放入节点的 conf_dir，插件放入 bin_dir；先准备内核转发条件，再启动 containerd。
+kubelet 使用 Pod 网络模式，检查 runtime/network readiness，并把 sandbox IP 写到 Pod status。
+proxy 监听 Service/Endpoints；回调只入队，worker 从 API 重新取集合，分配 VIP、生成并提交规则。</p>
+<p>API 暂时不可用时保持上一次规则；新的集合读取与规则提交成功后再替换。进程重启从 API 和
+节点实际状态恢复。原文所有代码需要的安装和权限步骤由 VM runner 提供，路径与端口在契约中公布。</p>
+<h3 id="开发任务">开发任务</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>实现</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td>纯 IPAM、范围/唯一性、锁与持久化</td>
+<td>/30 边界、并发进程、重开后占用正确</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>bridge/veth ADD、幂等 DEL、CHECK</td>
+<td>VM 中单个 sandbox 能访问，失败不释放在用 IP</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>VIP 选取与纯规则生成</td>
+<td>重启不重复；多端口/就绪后端排序稳定</td>
+</tr>
+<tr>
+<td>P4</td>
+<td>规则提交/撤销与 Watch</td>
+<td>新后端收敛、API/restore 失败保留可用规则</td>
+</tr>
+<tr>
+<td>P5</td>
+<td>hairpin、ARP 复用与双节点</td>
+<td>缓存预热、立即复用、双向 PodIP/VIP 均通过</td>
+</tr>
+</tbody>
+</table></div>
+<p>先用普通临时目录和假的命令执行器检验计算与错误处理；实际链接、规则和流量在 VM 中验证。
+proxy 实例按节点隔离，VIP 分配者只有一个；两者的并发边界分别处理。</p>
+<h2 id="9-逐项验收与排错">9. 逐项验收与排错</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>方法</th>
+<th>预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N1 地址</td>
+<td>启动两个 Pod，查 status，再实际访问 PodIP</td>
+<td>地址不同，能通信</td>
+</tr>
+<tr>
+<td>N2 边界</td>
+<td>/30 池分配两次，释放后重试</td>
+<td>.2 可用；第二个 ID 耗尽；释放后复用</td>
+</tr>
+<tr>
+<td>N3 CHECK</td>
+<td>删默认路由后调用 CHECK</td>
+<td>检出错误，恢复后成功</td>
+</tr>
+<tr>
+<td>S1 分担</td>
+<td>新建多条 TCP 连接访问 VIP</td>
+<td>两个就绪后端均能收到连接</td>
+</tr>
+<tr>
+<td>S2 多端口</td>
+<td>80/81 指向不同目标端口</td>
+<td>响应类别不串端口</td>
+</tr>
+<tr>
+<td>S3 UDP</td>
+<td>向 UDP Service 发请求并读回包</td>
+<td>选中合法 UDP 后端</td>
+</tr>
+<tr>
+<td>S4 hairpin</td>
+<td>Pod 经 VIP 命中自己</td>
+<td>请求与回包均成功</td>
+</tr>
+<tr>
+<td>S5 清理</td>
+<td>删除后端、Service，重启/退出 proxy</td>
+<td>后端收敛、VIP 稳定、旧规则删除、其他链保留</td>
+</tr>
+</tbody>
+</table></div>
+<p>入口见 <a href="labs/workloads.html">工作负载实验 W1/W3/W5</a>。局部参考检查：</p>
+<pre><code class="language-bash">(cd reference &amp;&amp; go test -race -count=1 -timeout=120s ./internal/cni ./internal/proxy)
+</code></pre>
+<p>双节点自动入口见 <a href="10-integration.html">集成章</a>，实际断言包括新连接采样、外来链保留、地址复用。
+先确认 Pod 进程真的运行，再检查 namespace 地址/路由、host veth、bridge，最后看 NAT 规则。
+PodIP 访问成功而 VIP 失败时，检查 Endpoints 是否包含预期 UID/端口，以及 proxy 是否已观察到
+那一版本。VIP 创建、Ready、Endpoints 与规则分别异步变化，验收轮询最终结果并设置超时。</p>
+<h2 id="10-范围与后续">10. 范围与后续</h2>
+<p>本章包含 IPv4 bridge/IPAM、每节点一个 proxy，以及下节的静态路由跨节点实验。
+DNS、NodePort、NetworkPolicy 与连接排空留到扩展。滚动更新期间可有短暂请求失败，MVP 验收记录这些结果并检查最终
+收敛；连接不中断的保证需要另行设计。</p>
+<p>独立学习者应能更换私有包结构、IPAM 格式和网络调用库，只要满足已公布的输入输出与行为。
+本章参考机制的运行结果与教材覆盖对应关系分别保存在验收报告和第 11 章。</p>
+<h2 id="补充实验原文的双节点静态路由">补充实验：原文的双节点静态路由</h2>
+<p>同节点通信使用同一 bridge；另一个节点上的 Pod 则需要知道下一跳。假设两台实验 VM 的
+节点链路地址分别为 10.200.0.11、10.200.0.12，PodCIDR 分别为 10.244.1.0/24、10.244.2.0/24。
+先为每台 VM 的 CNI 配置本节点的 subnet，再在已核实 UUID 的 guest 内配置对端路由：</p>
+<pre><code class="language-text">node1: ip route replace 10.244.2.0/24 via 10.200.0.12
+node2: ip route replace 10.244.1.0/24 via 10.200.0.11
+</code></pre>
+<p>两个节点都开启 IP 转发。Pod A 的目标地址在对端网段时，先到本节点网关，再按静态路由送到
+对端节点，由对端 bridge 交给 Pod B。回包沿相反方向返回。不同节点的 PodCIDR 不重叠，
+各节点仍使用原来的文件 IPAM；此处无需跨节点分配协议。</p>
+<p>两个 kubelet 连接同一 API，使用不同 node 名称、链路 IP 和各自 VM UUID。每个节点运行
+一个 proxy，规则输入相同，但分别作用于本节点。为保持现有简单分配器的单写者条件，
+指定一个 proxy 分配 VIP；另一个使用 --observer-only。多个 Service 的 VIP 都由这个
+分配者通过 API 发布，避免两个进程分别使用旧快照分配出重复地址。</p>
+<p>先通过 API 调度两个真实 Pod，确认落在不同节点；再检查双向 PodIP 请求；最后从两侧 Pod
+请求同一 VIP，观察到两个后端。Service 选择发生在新连接上，采样时关闭连接复用；长连接
+会继续使用其已有映射。删除一个后端、重启一个 proxy 后，观察规则和请求结果收敛。</p>
+<p>公开测试器入口为 --case cross-node，使用提供的 fixture /fetch 端点从 Pod 内发请求。
+该端点属于测试镜像，不是 MiniK8s 产品 API。所有网络配置均在实验 VM 内；提供的双节点
+runner 自动配置链路/路由并负责销毁，学习者只需理解数据路径。</p>
+<h2 id="资料">资料</h2>
+<ul>
+<li>原文 §14–15：<a href="../audit/evidence/research/source-tutorial.html">本地原文</a>。</li>
+<li>CNI/PROXY 订正：<a href="../audit/ERRORS.html">审计清单</a>；<a href="../docs/contracts/network-proxy.html">网络行为契约</a>。</li>
+<li>运行记录：<a href="../docs/progress/P01-I01.html">P01/I01</a>、<a href="../docs/progress/ALIGNMENT.html">双节点与冷拉取</a>。</li>
+<li>固定接口：<a href="https://github.com/containernetworking/cni/blob/main/SPEC.md">固定 CNI 规范与版本索引</a>（含 spec-v0.4.0）。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

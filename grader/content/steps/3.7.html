@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.7：推送删除事件并取消订阅 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-37推送删除事件并取消订阅">Stage 3.7：推送删除事件并取消订阅</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在实时事件中保留删除前值，并实现取消订阅。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本小节验收你的键值存储。测试器启动 <code>--driver</code> 指向的可执行程序，把本轮数据目录作为
+<code>os.Args[1]</code> 传入，然后不断往 stdin 写单行 JSON。你从消息的 <code>op</code> 字段判断操作，向 stdout
+返回一行 JSON；同一个进程中的多次请求应操作同一份存储。
+需要保存数据时，先用 <code>os.MkdirAll</code> 创建传入的目录。</p>
+<p>例如 <code>./bin/my-minik8s /tmp/course-run/work/driver</code> 表示启动你的程序，并把这个目录交给它保存数据。
+本阶段可在普通用户环境运行。程序收到 <code>close</code> 后清理并正常结束。
+<a href="../../docs/ADAPTER.html#stage-3">接入说明</a> 解释完整消息格式。</p>
+<h2 id="实时删除需要什么内容">实时删除需要什么内容</h2>
+<p>测试器先订阅 watch/，补发写入 watch/item 的事件，再删除这个键。下一次 next 应取得：</p>
+<pre><code class="language-json">{"ok":true,"event":{"type":"DELETE","key":"watch/item","value":"full-value","revision":12,"previousRevision":11}}
+</code></pre>
+<p>版本值用于展示相对关系：revision 是删除提交的位置，previousRevision 是被删记录原来的
+版本。测试器核对 DELETE、旧值和版本增大，最后发 <code>{"op":"cancel","watch":"test"}</code>。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>删除提交时，用旧记录构造事件，并将它与新提交版本一起放入事件队列。取消订阅时释放
+等待者和注册记录，让进程可以正常处理后续请求和 close。</p>
+<p><a href="../stages/03-kv.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>KV-WATCH</code>：删除事件包含旧值和更大的版本，cancel 正常退出。</p>
+<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 3.7
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

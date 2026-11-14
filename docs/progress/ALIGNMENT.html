@@ -1,0 +1,202 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>原教程范围对齐：实现与验收 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="原教程范围对齐实现与验收">原教程范围对齐：实现与验收</h1>
+<p>本轮按 <code>docs/TUTORIAL-ALIGNMENT-PLAN.md</code> 修改参考实现。保留已审计的架构选择，
+范围含原文 §14.4 的静态路由跨节点实验；DNS、NodePort、Ingress、CSI/PV/PVC、HPA、HA
+继续按原文与项目约定分开安排。当前交付按实验正确性与教程覆盖验收。</p>
+<h2 id="本轮改动">本轮改动</h2>
+<ul>
+<li>补上原文 §4 的 kubectl-mini JSON 客户端，支持 get/create/replace/patch/delete。</li>
+<li>普通对象增加 RFC 7396 对象形式的 Merge PATCH：显式 RV、递归对象合并、数组替换、
+  null 删除、原有身份/校验/CAS 保护；提供 Go Client.Patch 和公开黑盒检查。</li>
+<li>scheduler 按原文的 CPU/memory 已用比例评分，同分按节点名排序，并处理整数乘法溢出。</li>
+<li>Runtime 增加 CPU period/quota、cgroup v2 pids.max=512、RuntimeDefault seccomp 与
+  原文演示的能力集合。实际配置和值的检查见 VM 结果。</li>
+<li>proxy 增加 --observer-only。每节点一个 proxy，全群只有指定进程分配 VIP，其他节点
+  消费 API 中的已发布地址并生成本地规则。</li>
+<li>双节点 runner 使用已有 QEMU user/socket 链路；guest 内各自配置不同 PodCIDR 和
+  对端静态路由。保留完整单节点验收，再执行双节点集成。</li>
+<li>真实镜像拉取实验使用只读 OCI 仓库 fixture 和带唯一层文件的新镜像，检查缺失、失败后
+  恢复与缓存命中。测试设施与产品代码分别存放。</li>
+</ul>
+<h2 id="原文到实现的验收矩阵">原文到实现的验收矩阵</h2>
+<p>下表列出公开行为和测试入口。逐次实际结果见 <code>evidence/alignment-20261107/</code>，
+完整 VM 最终结果在本报告的运行结果段记录。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>原文/订正</th>
+<th>行为与主要边界</th>
+<th>测试入口/证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ORIG-KV</td>
+<td>§8；KV 订正</td>
+<td>单调 revision、单键 CAS、快照 List、持久恢复、失败写保护</td>
+<td>internal/kv/*_test.go；历史 K01/K02 与本轮全套竞态</td>
+</tr>
+<tr>
+<td>ORIG-API</td>
+<td>§3.1、§9；API-006</td>
+<td>六类对象 CRUD/List/PATCH；身份、默认值、非法输入、CAS；重启保留数据</td>
+<td>internal/api/*_test.go；Client.Patch；grader api/patch；VM public-merge-patch</td>
+</tr>
+<tr>
+<td>ORIG-CLI</td>
+<td>§4 的组件表</td>
+<td>JSON get/create/replace/patch/delete、文件/stdin、命名空间、CAS、退出码</td>
+<td>cmd/kubectl-mini 测试；scripts/verify-cli.py 的实际 API/CLI 进程</td>
+</tr>
+<tr>
+<td>ORIG-WATCH</td>
+<td>§10；WATCH 订正</td>
+<td>List 后续接、事件顺序、压缩/慢消费者、断线/取消、PATCH MODIFIED</td>
+<td>internal/api、client 的 Watch 测试；grader watch</td>
+</tr>
+<tr>
+<td>ORIG-CACHE</td>
+<td>§13.1–13.2</td>
+<td>缓存副本、差异通知、key 去重、处理中再入队、失败退避、退出</td>
+<td>internal/informer、workqueue 测试</td>
+</tr>
+<tr>
+<td>ORIG-SCHED</td>
+<td>§12；SCHED 订正</td>
+<td>资源过滤、init 峰值、比例评分、绑定竞争/重启、异构容量与溢出</td>
+<td>internal/scheduler 测试；双节点真实调度</td>
+</tr>
+<tr>
+<td>ORIG-RUNTIME</td>
+<td>§6–7、§11</td>
+<td>sandbox/Create/Start/退出/重启、env/init、CPU/memory/PID 与 seccomp/caps</td>
+<td>internal/runtime、kubelet 测试；单节点 CRI 验收；cluster runtime-security.txt</td>
+</tr>
+<tr>
+<td>ORIG-IMAGE</td>
+<td>§7.1；§18 预置镜像与拉取分开</td>
+<td>镜像未缓存时实际获取层、失败可见并重试、缓存命中不依赖仓库</td>
+<td>cluster.py；registry.jsonl、pull-proof、CRI；registry_test.py 验证测试设施</td>
+</tr>
+<tr>
+<td>ORIG-VOLUME</td>
+<td>§2、§3.2</td>
+<td>已有 hostPath 文件/目录、init 共享、读写/只读、缺失/类型错误</td>
+<td>runtime_test.go；单节点 init-env-hostpath-order/read-only-hostpath</td>
+</tr>
+<tr>
+<td>ORIG-RS</td>
+<td>§13.3、§13.6；RS 订正</td>
+<td>owner UID+selector、补副本、扩缩容、同名重建/响应丢失、父删除</td>
+<td>controller/replicaset_test.go；grader rs；真实 CRI 验收</td>
+</tr>
+<tr>
+<td>ORIG-DEPLOY</td>
+<td>§13.4；DEPLOY 订正</td>
+<td>template hash、surge/unavailable 预算、等待 Ready、CAS 错误</td>
+<td>controller/deployment*test.go；grader deployment；真实更新与 Service</td>
+</tr>
+<tr>
+<td>ORIG-EPS</td>
+<td>§13.5；EPS 订正</td>
+<td>selector/Ready、整数/命名端口、事件重算、手工对象与删除</td>
+<td>controller/endpoints_test.go；VM 后端 UID/port 检查</td>
+</tr>
+<tr>
+<td>ORIG-CNI</td>
+<td>§14.1–14.3；CNI 订正</td>
+<td>IPv4 保留地址、并发/幂等/耗尽/释放、CHECK、回收和 IP 复用</td>
+<td>internal/cni 测试；实际 named netns、/30 池、Pod 通信</td>
+</tr>
+<tr>
+<td>ORIG-XNODE</td>
+<td>§3.1、§14.4</td>
+<td>不重叠 CIDR、静态路由、跨节点双向 PodIP 和 Service、代理重启</td>
+<td>两侧路由/NAT；cluster.py；grader cross-node</td>
+</tr>
+<tr>
+<td>ORIG-PROXY</td>
+<td>§15；PROXY 订正</td>
+<td>多端口 TCP/UDP、hairpin、就绪后端、规则收敛、唯一 VIP、规则清理</td>
+<td>internal/proxy 测试；单节点与双节点 API/流量检查</td>
+</tr>
+<tr>
+<td>ORIG-E2E</td>
+<td>§18</td>
+<td>声明→控制器→调度→CRI/CNI→Service，以及声明支持的恢复与清理</td>
+<td>run.py --two-node；Bash grader；每次 vm-delete.json</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="保留的简化与提供的设施">保留的简化与提供的设施</h2>
+<p>API Server 内嵌 KV、HTTP NDJSON、containerd/crictl/runc 适配、串行周期协调的 kubelet、
+单 scheduler/控制器、实时 List 建账与可选索引保持原有选择。它们的机制映射见对齐计划。
+VM 身份校验、下载/部署脚本、测试镜像和仓库均是提供的实验设施，学习者可复用。</p>
+<p>hostPath 指各节点自己的本地路径，不提供跨节点共享存储。Ready 按应用进程运行状态判断，
+此轮沿用原文的基础控制流程，未新增探针体系、驱逐或节点硬故障迁移。</p>
+<h2 id="复现">复现</h2>
+<p>下载并校验输入的方法见 <a href="../VM-EXPERIMENTS.html">VM 环境说明</a>。在仓库根目录：</p>
+<pre><code class="language-bash">python3 reference/tests/vm/run.py \
+  --image /path/to/base.qcow2 --sha512 &lt;image_SHA512&gt; \
+  --crictl /path/to/crictl.tar.gz --crictl-sha256 &lt;crictl_SHA256&gt; \
+  --two-node --output /tmp/opencode/original-scope-new-output
+</code></pre>
+<p>宿主机需要可用 KVM 和 QEMU 工具。guest 安装依赖时可指定 --apt-proxy；网络配置、CRI、
+cgroup 和 iptables 操作都在已核对 UUID 的获批 VM 内执行。runner 无论成功或失败都尝试
+保存日志，确认停止后删除 overlay、seed 和密钥目录；超时 watchdog 提供额外回收路径。</p>
+<p>普通检查：</p>
+<pre><code class="language-bash">cd reference
+go test -race -count=1 -timeout=120s -coverprofile=/tmp/coverage.out -covermode=atomic ./...
+go tool cover -func=/tmp/coverage.out
+go vet ./...
+go build -buildvcs=false ./...
+</code></pre>
+<p>公开协议/接口依据：
+<a href="https://www.rfc-editor.org/rfc/rfc7396">RFC 7396</a>、
+<a href="https://github.com/kubernetes/cri-api/blob/v0.29.0/pkg/apis/runtime/v1/api.proto">CRI v1.29.0</a>。
+此轮未改变第一阶段审计包。</p>
+<h2 id="本轮运行结果">本轮运行结果</h2>
+<p>最终完整运行目录为 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/alignment-20261107/pull-vm/cluster/summary.json">pull-vm（本地工程附件）</span>。
+原有 <strong>43 项单节点断言</strong>及新增 <strong>13 项双节点断言</strong>全部通过。独立 grader 的单节点 all
+为 7 项，带全组件生命周期为 8 项，双节点 all 为 7 项，cross-node 为 2 项；API 恢复模式
+另有 2 项。退出后两侧容器/sandbox、IPAM 分配与自有 NAT 规则均已回收。</p>
+<p>真实结果包括：1500 毫核 Pod 分别落到两台 2000 毫核节点；双向 PodIP 通信；两个节点的
+Pod 经同一 VIP 均访问到两侧后端；9 个 Service 使用不同 VIP；删除后端和重启代理后收敛。</p>
+<p>仓库先返回 503，使 Pod 报 RuntimeError；恢复后实际获取唯一镜像层并启动，容器能读取
+/pull-proof 的唯一内容；缓存已有该镜像后，仓库再次不可用仍能启动。运行容器中实际读到
+cpu.max=5000 100000、memory.max=67108864、pids.max=512、Seccomp=2、CapEff=0x400。
+原始文件见 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/alignment-20261107/pull-vm/cluster/runtime-security.txt">runtime-security.txt（本地工程附件）</span>，
+仓库请求见 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/alignment-20261107/pull-vm/cluster/registry.jsonl">registry.jsonl（本地工程附件）</span>。</p>
+<p>8 个并发客户端创建 100 个独立对象，用时 0.089 秒，UID 全部不同；这是本轮公布的有界
+控制面负载实验规模。Go 全套竞态检查通过，语句覆盖率为 84.1%；逐包与逐函数数据保留在
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/alignment-20261107/checks/test-summary.json">checks（本地工程附件）</span> 与 coverage-functions.txt。
+覆盖率按 Go 单元/进程测试统计，fixture main 的真实容器执行另由 VM 断言覆盖。</p>
+<p>本轮测试统计：350 个顶层测试、149 个子测试；
+helper 的条件 skip 和无独立测试的 fixture 包在统计中分别记录。构建、vet、gofmt 均通过。</p>
+<h2 id="失败记录与修正">失败记录与修正</h2>
+<ul>
+<li>first-vm：Service 采样复用了到 VIP 的连接，未完成两个后端的观察，末尾还记录过 502。
+  fixture /fetch 改为禁用连接复用，让每次样本对应新连接；随后两侧均完成后端采样。
+  早期 502 没有单独复现定位，原始日志与当时两侧路由/NAT 保留。</li>
+<li>fresh-vm：双节点网络已通过，测试仓库的方法名 request 与 BaseHTTPRequestHandler
+  保存的 socket 属性同名，GET 抛 TypeError。改为 serve_image，补独立真实 HTTP 自检，
+  再用新 VM 通过拉取、恢复、缓存和完整集成；没有跳过失败用例。</li>
+<li>首次 Go 检查暴露原有 Allow 断言与资源 map 类型需要随接口修改同步；新增测试曾误用
+  HTTP 辅助函数的返回类型。修正测试后通过相关检查与完整竞态检查。</li>
+</ul>
+<h2 id="交付边界">交付边界</h2>
+<p>参考实现现覆盖原教程主线与静态路由跨节点实验，保留本报告列出的架构替换。
+普通对象 PATCH 的具体合并协议是对原文缺失 handler 的补充，学习者须按已公布契约实现。
+NodePort、DNS、Ingress、CSI/PV/PVC、HPA 与 HA 未纳入本轮。实现与教程的逐章对应见 tutorial/11-independent-validation.md，学习者反馈作为后续改进材料。</p>
+<h2 id="cli-与当前代码规模">CLI 与当前代码规模</h2>
+<p>kubectl-mini 已在实际独立进程中通过 create/list/get/patch/stale-patch/delete/404/错误资源/help
+共 9 项检查；unit 同时验证 replace、文件输入、namespace 与输入限制。
+客户端只使用公开 HTTP API，提供给学习者复用。</p>
+<p>本轮运行 Go 代码 6,897 行、Go 测试 11,609 行
+（cloc 排除空行/注释，fixture 另计）。完整统计见 checks/loc-summary.json。</p>
+<h2 id="资源回收与来源">资源回收与来源</h2>
+<p>本轮三次实验共 6 台临时 VM 均已停止，临时磁盘、seed、SSH key 与约 357 MiB 的输入缓存
+已删除。10 台原有 libvirt VM 仍处于关机状态；清单见 existing-vms-after.log。
+第一阶段发布包 SHA-256 保持不变，逐 VM 回收记录见 host-cleanup.json。
+一次只读 worker 委派因周额度耗尽退出，服务端确认停止，没有可用调查结果；本轮代码、
+复核与测试均由主 agent 执行，记录见 delegation.json。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

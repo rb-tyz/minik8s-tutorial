@@ -1,0 +1,130 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>P01/I01：单节点 MVP 的网络与完整集成 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="p01i01单节点-mvp-的网络与完整集成">P01/I01：单节点 MVP 的网络与完整集成</h1>
+<p>本轮由主 agent 完成，未调用 subagent。按 <a href="../MVP-SCOPE.html">教学范围</a> 实现原文 §14–15
+及相应订正，组合验证已有 Deployment、ReplicaSet、scheduler 与 kubelet。参考实现已在
+全新隔离 KVM 通过真实容器和网络验收；修订教程初稿与独立 Bash 测试器均已提供。</p>
+<h2 id="实现与材料">实现与材料</h2>
+<ul>
+<li><code>mini-cni</code>：CNI 0.4.0 ADD/DEL/CHECK/VERSION，文件锁 IPAM、IPv4 bridge/veth、
+  默认路由、地址释放与复用、失败回收。保留网络、网关、广播地址。</li>
+<li><code>mini-proxy</code>：Service VIP 分配与重启恢复、多端口 TCP/UDP、就绪后端、DNAT、
+  hairpin/SNAT；一次提交自有链，退出撤销自有规则并保留其他链。</li>
+<li><code>mini-kubelet --network-mode pod</code>：CRI 网络就绪检查、独立 Pod namespace 与 IP。</li>
+<li><code>tutorial/00</code>–<code>10</code>：从对象/控制循环到完整网站更新的修订教程；另有 CRI 操作实验和
+  学习者复现记录表。公开行为在 <code>docs/contracts/</code>。</li>
+<li><code>grader/grade.sh</code>：使用 Bash/curl/jq/公开 API 检查主流程；start/stop/restart 由适配器提供。
+  grader 自身正例通过，故意把 stale PUT 的 409 错报为 200 的实现被拒绝。</li>
+</ul>
+<h2 id="实际验收">实际验收</h2>
+<p>本次成功记录位于 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/i01-20261107/reuse-fixed/guest/summary.json">reuse-fixed（本地工程附件）</span>：
+<strong>42 项真实断言通过</strong>，覆盖旧有运行时/控制器和新增网络/集成。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>实际断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pod 网络</td>
+<td>guest→Pod、Pod→Pod 的已知 HTTP 响应；两个独立地址</td>
+</tr>
+<tr>
+<td>CNI</td>
+<td>CHECK 成功；删除默认路由后 CHECK 失败；/30 池排除广播、检测耗尽、释放后复用</td>
+</tr>
+<tr>
+<td>Service</td>
+<td>两个 HTTP 端口分别到正确后端；UDP 两后端；Pod 通过 VIP 访问自己</td>
+</tr>
+<tr>
+<td>proxy 恢复</td>
+<td>强杀重启后 VIP 不变；删除后端后规则和响应收敛；foreign chain 保留</td>
+</tr>
+<tr>
+<td>完整部署</td>
+<td>Deployment→RS→Pod→容器→Endpoints→ClusterIP 返回 version-one</td>
+</tr>
+<tr>
+<td>版本更新</td>
+<td>两个新模板 Pod、Endpoints/规则收敛、guest 与 Pod 经 VIP 返回 version-two</td>
+</tr>
+<tr>
+<td>API 中断</td>
+<td>已安装规则与运行容器继续提供 version-two；恢复后控制循环续接</td>
+</tr>
+<tr>
+<td>清理</td>
+<td>API 自有对象、容器、sandbox、IPAM 分配清零；临时 VM 和磁盘/密钥删除</td>
+</tr>
+<tr>
+<td>独立测试器</td>
+<td>all 的 6 个公开检查点通过；API hooks 的 CRUD/强杀恢复两项通过</td>
+</tr>
+</tbody>
+</table></div>
+<p>滚动过程记录 18 次请求、0 次错误，见该次 <code>guest/integrated-traffic.json</code>。
+完整集成的最终复验、重复请求及全组件 hooks 结果另见下方补充记录。</p>
+<h2 id="全组件生命周期最终复验">全组件生命周期最终复验</h2>
+<p>最新 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/i01-20261107/final-cleanup/guest/summary.json">final-cleanup/guest/summary.json（本地工程附件）</span>
+共 <strong>43 项断言通过</strong>。滚动采样 17 次请求、0 次错误；转发收敛后从两个 Pod
+各请求 3 次、guest 请求 20 次，API 停止后再请求 20 次，均返回 version-two。
+独立 grader 的 attach 模式 6 项、API hooks 模式 2 项、全组件 hooks 模式 7 项全部通过。
+后者由测试器自行启动五个进程、强杀恢复 API，最后停止进程并确认容器/sandbox/IPAM 均为零。</p>
+<p>此前 <code>final-managed/</code> 的 7 项功能检查通过，但实际 sandbox 未清理：API 删除后就停止
+kubelet，使其回收周期尚未执行。参考 stop 适配器现先等待本次节点的 CRI 资源消失，再停止
+kubelet/API；失败路径仍尝试停止本次进程并报告错误。最终复验保留了这一清理断言。</p>
+<p>所有本轮创建的 VM 均已停止，临时目录及输入缓存已移除，见
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/final-mvp-20261107/host-cleanup.json">host-cleanup.json（本地工程附件）</span>。普通检查也通过构建、vet、
+格式、Shell/Python 语法、文档链接与第一阶段归档校验。</p>
+<h2 id="ip-复用故障与订正">IP 复用故障与订正</h2>
+<p>早期 I01 曾在最终 Pod/Service 请求失败，初次缺少足够现场；日志原样保存在
+<code>evidence/i01-20261107/fresh-vm/</code>。随后增加转发收敛观察，一次通过后，
+<code>grader-vm/</code> 再次在 API 停止后的 Service 请求超时，滚动期也记录了两次超时。</p>
+<p>最小复现实验 <code>reuse-reproduction/guest/cni-reuse.json</code> 给出了原因：
+旧 sandbox 使用 10.246.0.3 / ee:87:3f:5b:71:90，新 sandbox 立即复用该 IP，
+MAC 变为 9e:6f:ff:f7:fe:f7，而 guest 邻居缓存仍为 REACHABLE 的旧 MAC，请求超时。
+这条复现路径与异步 Endpoints 的等待分别处理。</p>
+<p>修复为按 IPv4 生成稳定的本地管理单播 MAC（02:00 加四字节 IP），并固定网关 MAC。
+IPAM 的地址唯一性也保证本网络内该 MAC 的唯一性。复验中旧/新接口均为
+02:00:0a:f6:00:03，地址立即复用后的 HTTP 成功，网关 MAC 稳定。
+CNI 单元回归及五轮竞态检查通过；真实复现用例加入每次完整 VM 验收。
+<a href="../../tutorial/09-pod-network-service.html">网络章节</a> 已补充 ARP、故障原因与可选修复思路。
+上游 bridge 同样固定网关 MAC，参见
+<a href="https://github.com/containernetworking/plugins/blob/v1.4.0/plugins/main/bridge/bridge.go#L285">CNI plugins v1.4.0 bridge.ensureAddr</a>。</p>
+<p><code>reuse-before/</code> 是新探针把 DEL 空输出当作 JSON 解析的失败，修正探针后才得到上述网络反例。
+所有失败目录保留实际结果，每次复验使用新目录。</p>
+<h2 id="普通检查与复现">普通检查与复现</h2>
+<p>修复后的完整 Go 竞态检查：18 个包、338 个顶层测试、
+130 个子测试通过，失败数 0。
+统计、helper skip 和命令日志见 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/final-mvp-20261107/test-summary.json">final-mvp-20261107（本地工程附件）</span>。</p>
+<pre><code class="language-bash">cd reference
+go test -race -count=1 -timeout=120s ./...
+go vet ./...
+go build -buildvcs=false ./...
+</code></pre>
+<p>VM 输入下载/校验见 <a href="../VM-EXPERIMENTS.html">环境说明</a>，从仓库根目录执行：</p>
+<pre><code class="language-bash">python3 reference/tests/vm/run.py \
+  --image /path/to/base.qcow2 --sha512 &lt;image_SHA512&gt; \
+  --crictl /path/to/crictl.tar.gz --crictl-sha256 &lt;crictl_SHA256&gt; \
+  --pod-network --output /tmp/opencode/mvp-new-output
+</code></pre>
+<p>runner 核对镜像/crictl 校验和，创建两台 KVM，仅在 node1 实验，node2 待机。
+创建记录、guest UUID、过程日志及 vm-delete.json 随每次运行保存。宿主机采用普通 QEMU user
+网络；网络、挂载、CRI/cgroup/namespace 操作均在经 UUID 检查的获批 guest 内执行。</p>
+<h2 id="测试器收尾检查">测试器收尾检查</h2>
+<p>整理交付时又发现清理误报：功能检查完成后，Service List 若持续返回 503，旧版 cleanup
+会跳过该集合并报告成功。新增公开 HTTP 故障适配器复现，记录在
+<code>evidence/grader-cleanup-20261107/before/summary.json</code>：功能检查通过，清理结果未知，却退出 0。</p>
+<p>现改为轮询确认所有集合均成功返回合法空列表；查询失败或列表格式错误会保留响应并继续
+等待，到期限仍未确认则退出非零。<code>grader/verify.py</code> 在普通用户环境复验真实 API CRUD/Watch
+正例、错误 CAS 响应和清理查询失败两个负例，结果见 after/summary.json。
+这项修订发生在 KVM 集成验收之后，针对测试器的公共 HTTP 清理路径；容器与网络实现未改动。</p>
+<h2 id="交付状态">交付状态</h2>
+<p>第二阶段的原教程单节点 MVP 已实现。第三阶段的教程初稿覆盖整个 MVP，目标学习者独立
+复现待开展，记录入口为 <a href="../../tutorial/11-independent-validation.html">11-independent-validation.md</a>。
+第四阶段已有可运行的 MVP 主流程黑盒测试器；逐模块异常场景、更多故意错误实现和独立
+学习者实现的实际接入继续完善。原教程审计包保持原样。</p>
+<p>当前环境为 Debian 12、containerd 1.6.20、runc 1.1.5、iptables 1.8.9 nf_tables。
+范围为单节点 IPv4、hostPath、ClusterIP、基础 RollingUpdate。Ready 暂按应用进程运行判断；
+转发按异步循环收敛，未提供连接排空。跨节点、DNS、NodePort、路径路由留在扩展阶段。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

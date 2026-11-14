@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.10：重启后接管现有容器 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-610重启后接管现有容器">Stage 6.10：重启后接管现有容器</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>让 kubelet 重启后读取并接管已有任务。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本阶段实现 kubelet，也就是在一个节点上负责运行 Pod 的组件。Pod 是对“运行哪些容器”的描述：
+<code>spec</code> 保存期望配置，<code>status</code> 保存观察结果。kubelet 读取分配给本节点的 Pod，调用前两节的
+运行时接口，再把结果写回 API。</p>
+<p>测试器调用 <code>./test-hooks/start node /tmp/course-run/work/lifecycle</code>，由你的脚本启动 API 和
+kubelet。随后它创建已经填写 <code>spec.nodeName</code> 的 Pod，并等待结果。这里使用节点网络，Pod 网络
+在第九小节实现。本节在实验 KVM 内运行，测试程序和镜像由实验环境准备。</p>
+<h2 id="重启后先观察已有任务">重启后先观察已有任务</h2>
+<p>测试器启动一个 Pod，记住应用 containerID 与 Node 条件中的 lastHeartbeatTime，然后调用：</p>
+<pre><code class="language-text">./test-hooks/restart kubelet /tmp/course-run/work/lifecycle
+</code></pre>
+<p>只重启 kubelet，继续使用本轮数据目录。测试随后要求 Node 产生新心跳，Pod 仍为 Running，
+containerID 与重启前相同。lastHeartbeatTime 是节点最近一次报告健康状态的时间。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>启动时从运行时读取已有 sandbox/容器，用保存的身份或运行时标签关联到 Pod。接管当前任务，
+继续更新心跳和状态，再处理缺少的资源。</p>
+<p><a href="../stages/06-kubelet.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>NODE-RESTART</code>：心跳更新，应用容器 ID 保持不变。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 6.10
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

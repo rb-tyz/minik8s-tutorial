@@ -1,0 +1,273 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>08 Deployment 与 Endpoints：把已有控制循环接起来 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="08-deployment-与-endpoints把已有控制循环接起来">08 Deployment 与 Endpoints：把已有控制循环接起来</h1>
+<p>范围对应原文 §13.4–13.5 和 DEPLOY-002、EPS-001/002。
+本章机制已通过 HTTP 与真实容器集成验收，记录见 <a href="../docs/progress/R02.html">R02</a>；教程覆盖检查见第 11 章。
+模块：工作负载/后端发布。Deployment 依赖 RS；Endpoints 可只用 Service/Pod 单独开发。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>你已经有了 Pod API、ReplicaSet（RS）控制器和可运行 Pod 的节点。本章增加两个控制循环：
+Deployment 调整 RS 的副本数，逐步替换旧版本；Endpoints 把 Service 选择到的就绪 Pod
+整理为 IP 与端口，供下一章的转发程序读取。</p>
+<p>需要的前置概念只有四个：spec 是用户想要的状态，status 是已观察到的状态；label 是对象
+上的键值，selector 是选取这些键值的条件；owner UID 标记对象归属；reconcile 每次读取
+现状、做一小步调整，下次再检查。基础模块未实现时，可先用参考 API/RS/节点作为依赖，
+单独实现本章的两个控制器。</p>
+<p>做完后应能通过 API 把两个 v1 副本逐步换成两个 v2 副本，并查询它们对应的 Endpoints。</p>
+<h2 id="2-两个循环在系统中的位置">2. 两个循环在系统中的位置</h2>
+<pre><code class="language-text">Deployment -&gt; Deployment controller -&gt; ReplicaSet.spec.replicas
+                                          |
+                                      RS controller -&gt; Pod
+                                                         |
+                                                       kubelet -&gt; Pod.status
+Service + Pod.status -&gt; Endpoints controller -&gt; Endpoints -&gt; Proxy（下一章）
+</code></pre>
+<p>Deployment 控制器更新 RS；容器仍由 kubelet 启动。Endpoints 保存后端清单，网络请求的实际
+转发在下一章完成。两个控制器使用同一个 API，各自从 Watch 事件取得待处理的对象 key。</p>
+<h2 id="3-先固定接口与输入">3. 先固定接口与输入</h2>
+<p>复用对象与接口契约：<code>docs/contracts/api.md</code>。本章使用以下公开操作：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>输入</th>
+<th>读写</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Deployment</td>
+<td>GET/LIST/WATCH；通过 <code>/status</code> 更新观察结果</td>
+</tr>
+<tr>
+<td>ReplicaSet</td>
+<td>GET/LIST/WATCH、POST、带 RV 的 PUT/DELETE</td>
+</tr>
+<tr>
+<td>Service、Pod</td>
+<td>GET/LIST/WATCH</td>
+</tr>
+<tr>
+<td>Endpoints</td>
+<td>GET/POST、带 RV 的 PUT/DELETE</td>
+</tr>
+</tbody>
+</table></div>
+<p>key 使用 <code>namespace/name</code>。Deployment、RS、Pod、Service 和 Endpoints 都有 name、UID、RV。
+UID 用于比较归属，RV 用于检测读后写期间发生的修改；409 表示应重新读取再计算。</p>
+<p>本章支持 RollingUpdate。maxSurge/maxUnavailable 可为非负整数或 0%–100%：surge 百分比
+向上取整，unavailable 百分比向下取整，后者最多为期望副本数。副本数大于零时，换算后的
+两个值应至少有一个大于零，否则 API 返回 422，提示修改参数。这是本 MVP 的参数约束。
+<code>pod-template-hash</code> 留给控制器，用户模板不使用这个 label。</p>
+<h2 id="4-用两个副本理解滚动更新">4. 用两个副本理解滚动更新</h2>
+<p>设期望副本数 N=2，maxSurge=1，maxUnavailable=0。含义是最多额外申请一个副本，健康更新
+期间至少保留两个就绪副本。一次正常过程如下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th style="text-align: right;">已申请旧版</th>
+<th style="text-align: right;">已申请新版</th>
+<th>接下来做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">0</td>
+<td>新版 RS 增到 1</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">1</td>
+<td>等新版 1 个副本就绪</td>
+</tr>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">1</td>
+<td>新版 RS 增到 2</td>
+</tr>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">2</td>
+<td>等新版 2 个副本就绪</td>
+</tr>
+<tr>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">2</td>
+<td>等旧版清理完成，删除空旧 RS</td>
+</tr>
+</tbody>
+</table></div>
+<p>可以用三个量写出算法：</p>
+<ul>
+<li>total：所有自有 RS 的已申请副本数之和。</li>
+<li>room：<code>N + maxSurge - total</code>，表示还能申请多少。</li>
+<li>removableReady：<code>totalReady - (N - maxUnavailable)</code>，表示还能减少多少就绪副本。</li>
+</ul>
+<p>每次最多修改一个 RS，提交成功后等待 RS status 观察到新的副本数，再做下一步。这样可以
+在日志里逐步追踪请求与观察结果。若旧 RS 本来有未就绪副本，可先回收这些副本，它们不占用
+就绪预算。maxSurge=0、maxUnavailable=1 时则先减一个旧副本，再创建一个新版副本。</p>
+<h2 id="5-实现-deployment-reconcile">5. 实现 Deployment reconcile</h2>
+<p>建议按以下顺序编写，先用 API 构造 RS status 做单元实验，再接真实节点：</p>
+<ol>
+<li>GET Deployment，List 同 namespace 的 RS。按 owner 的 name/UID 找到其自有 RS。</li>
+<li>对 Pod template 的稳定 JSON 计算摘要。相同 template 得到相同摘要；仅改 Deployment
+   的副本数不会改变摘要。新 RS 与它生成的 Pod 都带 <code>pod-template-hash</code> label。</li>
+<li>找到对应新版 RS；缺失则创建 replicas=0 的 RS。名字应稳定，使创建重试可重复查询。
+   RS 的 selector 是 Deployment selector 加 template hash，template labels 也加相同 hash。</li>
+<li>若 RS 的 status.replicas 尚未反映上一次 spec.replicas，等下一条事件再算。</li>
+<li>先处理新版 RS 超过 N 的缩容；否则在 room 内增加新版副本。</li>
+<li>无法继续增加时，根据就绪预算及旧版未就绪数缩减旧 RS。每轮做一小步。</li>
+<li>新版达到 N 且就绪，旧 RS 的 spec/status 副本数都为零时，可删除空旧 RS。</li>
+<li>再 List 一次 RS，根据已提交的观察值更新 Deployment status。</li>
+</ol>
+<p><code>UpdatedReplicas</code> 统计使用当前 template 的已观察副本；<code>ReadyReplicas</code> 统计所有版本中
+已观察到的就绪副本。新版刚创建但未 Ready 时，前者可以是 1，后者仍由旧版提供。
+这是对原文把 UpdatedReplicas 赋成 ReadyReplicas 的订正，见 R02 交接记录。</p>
+<p>更新 RS 前复制对象；每次写入都处理返回的错误。写入失败时保留任务，下一轮从 API 重读。
+当前参考实现通过 List 建账；其他缓存方案也可使用，但需要保证失败写入不会污染观察值。</p>
+<h2 id="6-实现-endpoints-reconcile">6. 实现 Endpoints reconcile</h2>
+<p>Service 例如：</p>
+<pre><code class="language-json">{"metadata":{"name":"web","namespace":"default"},
+ "spec":{"selector":{"app":"web"},
+         "ports":[{"name":"http","port":80,"targetPort":"web","protocol":"TCP"}]}}
+</code></pre>
+<p>Pod 的应用容器声明 <code>ports=[{"name":"web","containerPort":8080,"protocol":"TCP"}]</code>。
+Service 的 80 是客户端入口；Endpoints 中应写入后端的 8080。</p>
+<p>实现步骤：</p>
+<ol>
+<li>从 key 解析 namespace/name，再 GET Service。Service 删除时用 key 清理其自有 Endpoints，
+   保留变量，不解引用已经为空的 Service（EPS-001）。</li>
+<li>List 同 namespace 的 Pod，要求 selector 匹配、Pod Running、所有应用容器 Ready、PodIP 有效。</li>
+<li>对每个 Service port：targetPort 缺省时使用 Service port；整数时使用该整数；字符串时，
+   在应用容器 ports 中查找同名且同 protocol 的端口。该 Pod 没有对应端口时跳过这一项。</li>
+<li>按解析后的 name/protocol/port 分组，组内保存后端 IP、NodeName 和 Pod UID 引用。
+   两个 Pod 的同名端口可分别为 8080、8081，应进入不同组。</li>
+<li>对分组和地址排序，GET 后创建或更新 Endpoints；内容未变时跳过写入。</li>
+</ol>
+<p>本章自动控制器只处理非空 selector。无 selector 的 Service 保持手工 Endpoints 原样；
+用户手工创建的同名 Endpoints 也应保留并报告归属冲突。MVP 按 Service owner UID 标记
+自动 Endpoints，同名 Service 重建后更新归属。</p>
+<h2 id="7-接上事件与失败重试">7. 接上事件与失败重试</h2>
+<p>Deployment 事件入队它自己的 key。RS 事件入队 RS key，同时从 ownerReference 找到
+Deployment key。Pod 事件入队其 RS key，以及同 namespace 的 Service key。Service 事件
+入队自己的 key。旧对象和新对象都参与事件映射，以处理 label/owner 的变化。</p>
+<p>这里可先遍历同 namespace 的 Service；索引优化留在实现说明中。事件回调只入队，实际
+HTTP 写入由一个 worker 完成。队列去重，失败退避，进程取消时停止全部 Watch。</p>
+<p>父对象删除后，按原文 §13.6 的简单策略清理其自有子对象：Deployment 删除 RS，再由 RS
+删除 Pod。同名重建要重新核对 UID，避免把新父对象的子对象一起回收。</p>
+<h3 id="开发检查点">开发检查点</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>本次实现</th>
+<th>局部完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td>稳定 template 摘要、owner/selector 与 RS 创建</td>
+<td>相同模板重试不新增 RS，改 replicas 不换摘要</td>
+</tr>
+<tr>
+<td>D2</td>
+<td>预算计算与每轮一步</td>
+<td>对表中每个状态手算出同样的 RS 修改</td>
+</tr>
+<tr>
+<td>D3</td>
+<td>状态、冲突、事件与清理</td>
+<td>RS 变化唤醒父对象；失败重读；重启继续</td>
+</tr>
+<tr>
+<td>E1</td>
+<td>selector/Ready/IP 与端口解析</td>
+<td>人工构造 Pod status 能得到排序后的后端</td>
+</tr>
+<tr>
+<td>E2</td>
+<td>事件映射与 owner 保护</td>
+<td>只改 Pod 就更新清单；手工 Endpoints 保留</td>
+</tr>
+</tbody>
+</table></div>
+<p>先分别写成纯计算函数，再接 API 读写。Deployment 与 Endpoints 使用独立队列，回调只入队。
+公开示例为 <span class="local-artifact" title="本地工程附件：tutorial/examples/deployment.json">deployment.json（本地工程附件）</span> 和 <span class="local-artifact" title="本地工程附件：tutorial/examples/service.json">service.json（本地工程附件）</span>。</p>
+<h2 id="8-分步验收">8. 分步验收</h2>
+<p>每个检查点都可通过公开 API 完成。先验证对象变化，再验证真实容器。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>操作</th>
+<th>应观察到的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1 初始部署</td>
+<td>创建 replicas=2 的 Deployment</td>
+<td>自有 RS 与两个自有 Pod；最终 Ready=2</td>
+</tr>
+<tr>
+<td>D2 等待就绪</td>
+<td>更新 template，暂不让新版 Ready</td>
+<td>maxUnavailable=0 时保留旧版就绪副本</td>
+</tr>
+<tr>
+<td>D3 正常滚动</td>
+<td>让新版逐步 Ready</td>
+<td>请求副本不超过 N+surge，完成后只剩新版 N 个</td>
+</tr>
+<tr>
+<td>D4 零 surge</td>
+<td>surge=0、unavailable=1</td>
+<td>先减旧版再建新版，按预算完成</td>
+</tr>
+<tr>
+<td>D5 错误写入</td>
+<td>在 UpdateRS 时返回 409/500</td>
+<td>重新读取后重算，共享对象保持原值</td>
+</tr>
+<tr>
+<td>E1 后端选择</td>
+<td>加入匹配/不匹配/未 Ready 的 Pod</td>
+<td>只发布同 namespace、匹配且就绪的有效 IP</td>
+</tr>
+<tr>
+<td>E2 端口解析</td>
+<td>使用整数、缺省、字符串 targetPort</td>
+<td>后端使用解析后的端口；未解析项被跳过</td>
+</tr>
+<tr>
+<td>E3 事件接线</td>
+<td>改 Pod Ready、label 或删除 Pod</td>
+<td>无需修改 Service 即更新后端</td>
+</tr>
+<tr>
+<td>E4 资源清理</td>
+<td>删除 Service、Deployment</td>
+<td>相应自有 Endpoints、RS、Pod 逐步清理</td>
+</tr>
+</tbody>
+</table></div>
+<p>可执行操作见 <a href="labs/workloads.html">工作负载实验 W3–W5</a>：POST 两个对象，带 RV PATCH template，
+轮询新版 Pod UID、Endpoints 与真实 VIP 响应。局部参考检查：</p>
+<pre><code class="language-bash">(cd reference &amp;&amp; go test -race -count=1 -timeout=120s ./internal/controller)
+</code></pre>
+<p>单元测试可给 RS 写入人工 status，检验控制算法。真实运行时使用 kubelet 报告的状态；
+本章 VM 实验通过 CRI 再次查询容器，记录新旧 Pod UID 和滚动过程。</p>
+<h2 id="9-调试时先看哪里">9. 调试时先看哪里</h2>
+<p>滚动停住时，依次查询 Deployment spec、各 RS 的 spec/status、Pod phase 与 container status。
+RS status 尚未追上 spec 时等待 RS 控制器；Pod 已绑定但 Pending 时查看 kubelet 的 RuntimeError。
+记录每轮 total、room、totalReady 和旧/新 RS，便于复算该步为何允许或拒绝扩缩。</p>
+<p>后端为空时，依次检查 namespace、selector、Ready、PodIP、targetPort 名称与 protocol。
+后端内容相同却不断变化 RV 时，检查排序以及空数组/缺省值的比较。</p>
+<h2 id="10-简化范围与资料">10. 简化范围与资料</h2>
+<p>本章保留原文的基础滚动循环和就绪后端清单。Available 暂与 Ready 相同；无暂停、回滚、
+进度期限、minReadySeconds、通用 GC 图或 EndpointSlice。状态是异步观察，滚动预算约束
+RS 的申请数与已报告就绪数；Pod 和运行时清理随后收敛。</p>
+<ul>
+<li>原文：<code>audit/evidence/research/source-tutorial.md</code> §13.4–13.6。</li>
+<li>订正：DEPLOY-002、EPS-001/002，及本轮新增状态/参数说明。</li>
+<li>公开接口：<code>docs/contracts/api.md</code>；本章契约：<code>docs/contracts/deployment-endpoints.md</code>。</li>
+<li>固定版本字段定义：<a href="https://github.com/kubernetes/api/blob/v0.29.0/apps/v1/types.go">apps/v1 DeploymentStatus</a>。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

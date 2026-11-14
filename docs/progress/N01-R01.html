@@ -1,0 +1,174 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第二阶段进度：真实容器与 ReplicaSet 已验证 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="第二阶段进度真实容器与-replicaset-已验证">第二阶段进度：真实容器与 ReplicaSet 已验证</h1>
+<p>日期：2026-11-06。本轮由主 agent 完成，未调用 subagent。</p>
+<h2 id="当前结果">当前结果</h2>
+<p>K01/K02/A01/A02/C01/S01/N01/R01 已实现。API Server、scheduler、kubelet、controller-manager
+作为四个独立进程，在全新隔离 KVM 中经公开 HTTP API 完成 Pod 调度、实际容器运行、
+状态查询、ReplicaSet 副本维持、删除恢复、扩缩容与进程重启恢复。</p>
+<p>第二阶段剩余 R02（Deployment/Endpoints）、P01（独立 Pod 网络与 Service Proxy）和 I01
+最终集成。当前使用 guest host 网络；跨节点、NodePort、DNS、路径路由及节点硬故障迁移
+仍属后续扩展。完整教程和独立 Bash 测试器分别属于第三、四阶段。</p>
+<h2 id="实现与设计">实现与设计</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>本轮交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>internal/runtime</code></td>
+<td>containerd CRI v1 的 crictl 适配；sandbox/container 分离；元数据恢复；init 顺序；重启策略；退出码；env/hostPath/资源配置；清理</td>
+</tr>
+<tr>
+<td><code>internal/kubelet</code></td>
+<td>Node 注册、Capacity/Allocatable、Ready 心跳；仅协调本节点 Pod；status CAS；API 故障时保留容器；孤儿回收</td>
+</tr>
+<tr>
+<td><code>cmd/mini-kubelet</code></td>
+<td>启动前核验 KVM 类型与 VM UUID；运行时端点、容量、数据目录、周期参数；正常退出标记 Node 不就绪</td>
+</tr>
+<tr>
+<td><code>internal/controller</code></td>
+<td>ReplicaSet owner UID；稳定 slot 名称的幂等创建；删除/终止补齐；缩容；旧 UID 子 Pod 清理；status 抑制</td>
+</tr>
+<tr>
+<td><code>cmd/mini-controller-manager</code></td>
+<td>独立进程，Informer/Queue 驱动单 worker，支持取消与重启恢复</td>
+</tr>
+<tr>
+<td>API 类型</td>
+<td>增加 <code>status.initContainerStatuses</code>，分别报告 init 与应用状态</td>
+</tr>
+<tr>
+<td>VM 工具</td>
+<td>静态 OCI fixture、guest 断言与可复现 runner；有超时、身份检查、失败日志及 VM 销毁</td>
+</tr>
+</tbody>
+</table></div>
+<p>Runtime 通过固定版本 crictl 调用成熟的 CRI 实现，Go 模块继续只使用标准库。
+ReplicaSet 每轮从 API List 获取已提交状态，稳定名称保护不确定创建重试，避免另建缓存
+expectation 账本。创建或删除响应丢失后，重新查询再决定后续动作。</p>
+<p>行为契约：<a href="../contracts/kubelet-runtime.html">Kubelet/Runtime</a>、<a href="../contracts/replicaset.html">ReplicaSet</a>。
+根目录及 reference 的中英文 README、架构和当前进度已更新。<code>audit/</code> 与第一阶段压缩包未改动。</p>
+<h2 id="验收结果">验收结果</h2>
+<p>证据目录：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/n01-r01-20261106">evidence/n01-r01-20261106/（本地工程附件）</span>。
+最终汇总：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/n01-r01-20261106/checks/summary.json">普通检查（本地工程附件）</span>、
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/n01-r01-20261106/final-vm/guest/summary.json">guest 断言（本地工程附件）</span>、
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/n01-r01-20261106/final-vm/vm-delete.json">VM 销毁（本地工程附件）</span>、
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/n01-r01-20261106/host-cleanup.json">宿主机清理（本地工程附件）</span>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查</th>
+<th>实际结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>全量 <code>go test -race -count=1 -timeout=120s -json ./...</code></td>
+<td>13 个测试包通过，290 个顶层用例、124 个子用例通过</td>
+</tr>
+<tr>
+<td>辅助入口</td>
+<td>KV 强杀测试的子进程入口按设计 SKIP；OCI fixture 包无单元测试</td>
+</tr>
+<tr>
+<td>Runtime/Kubelet/Controller 五轮竞态测试</td>
+<td>三个包全部通过</td>
+</tr>
+<tr>
+<td><code>go vet ./...</code></td>
+<td>退出 0</td>
+</tr>
+<tr>
+<td><code>go build -buildvcs=false ./...</code></td>
+<td>退出 0</td>
+</tr>
+<tr>
+<td><code>gofmt -l internal cmd tests</code></td>
+<td>退出 0、无输出</td>
+</tr>
+<tr>
+<td>新模块语句覆盖率</td>
+<td>Runtime 92.7%、Kubelet 98.7%、Controller 93.4%</td>
+</tr>
+<tr>
+<td>原 API/scheduler 独立进程验收</td>
+<td>两套脚本均通过</td>
+</tr>
+<tr>
+<td>全新 KVM 的最终验收</td>
+<td>19 项断言通过；运行时容器与 sandbox 全部清理</td>
+</tr>
+</tbody>
+</table></div>
+<p>当前 Go 产品代码 6614 行、测试 10801 行，不含 VM fixture；三个新组件分别为
+Runtime 498/538、Kubelet 149/310、Controller 249/405 行（产品/测试）。
+CLI 入口及测试镜像的重复参数代码单独保留。</p>
+<h3 id="最终-19-项真实断言">最终 19 项真实断言</h3>
+<ol>
+<li>Node 注册、正的 CPU/memory Allocatable 与 Ready=True。</li>
+<li>创建 Pod 后由独立 scheduler 绑定，CRI 查询为 CONTAINER_RUNNING。</li>
+<li>CRI readback 的 cpuShares=51、memory limit=67108864，与请求配置一致。</li>
+<li>kubelet SIGKILL 后重启，接管原 container ID；sandbox 数量保持 1。</li>
+<li>API Server SIGKILL 并中断 3s，容器继续运行；API 重启后恢复协调。</li>
+<li>Never 容器退出 0，API 为 Succeeded，CRI 退出码为 0。</li>
+<li>Never 容器退出 42，API 为 Failed，CRI 退出码为 42。</li>
+<li>两个 init 串行完成，环境变量检查成功，hostPath 初始化文件被应用读取。</li>
+<li>OnFailure 容器先失败后重启，最终 Running，restartCount=1。</li>
+<li>ReadOnly hostPath 写入被拒绝，容器退出 2，节点文件未被创建。</li>
+<li>init 退出 42 且策略 Never 时，Pod Failed，CRI 中应用容器未创建。</li>
+<li>外部停止 Always 容器后，kubelet 启动新 attempt，container ID 改变。</li>
+<li>ReplicaSet 的两个副本都进入 Running，ReadyReplicas=2。</li>
+<li>删除其中一个 Pod 后，新 UID 补齐至两个运行副本。</li>
+<li>controller-manager SIGKILL 后重启，扩容至三个就绪副本。</li>
+<li>缩容至一个就绪副本。</li>
+<li>删除父 RS 后子 Pod 回收，独立 Pod 保持 Running。</li>
+<li>删除全部 Pod 后 CRI containers=0、sandboxes=0。</li>
+<li>四个进程正常退出，Node Ready=False。</li>
+</ol>
+<p>此外，HTTP 测试覆盖创建/删除响应丢失、同名父资源重建、slot 名称冲突、无关 Pod 保护、
+API/CRI 列表失败时禁止 GC、状态写入遇到 Pod 删除/重建、容器重建及未知状态。</p>
+<h2 id="失败与修正记录">失败与修正记录</h2>
+<p>初始 VM 的日志保存在 <code>initial-vm/</code>，成功结果与早期失败分别存放。</p>
+<ul>
+<li>第一次：crictl 的 <code>--timeout</code> 传了 <code>10</code>，实际 v1.29.0 要求 duration（<code>10s</code>），
+  Node Ready 等待超时。修正适配层后，命令测试增加 duration 解析断言。</li>
+<li>第二次：容器已成功退出，验收脚本按必有字段读取退出码 0，但 API 使用 omitempty。
+  修正为缺省值 0；非零退出仍按实际值校验。</li>
+<li>第三次：该 VM 的 N01 十项检查全部通过，随后停止并删除该实验 VM。</li>
+<li><code>fresh-vm/</code>：从新 VM 重建 N01/R01，通过 15 项检查。</li>
+<li><code>final-vm/</code>：最终源码再从新 VM 构建，通过资源、只读挂载、init 失败和 Always 重启
+  等补充断言，共 19 项；该结果作为本轮验收。</li>
+</ul>
+<p>所有 guest 操作都先核验 UUID。launcher 每轮创建两台 KVM，本轮只使用 node1，node2 待机。
+三轮共创建的六个 VM 进程均已停止，overlay、seed、SSH key 目录全部删除；任务下载缓存、
+临时二进制已清理。十台既有 libvirt VM 保持关机。第一阶段发布包 SHA-256 仍为
+<code>139c749af7c2ece53113b384974f78d56636efc4b6e22ddcc3d79e3a7c1093b7</code>。</p>
+<h2 id="从新环境复现">从新环境复现</h2>
+<p>普通检查：</p>
+<pre><code class="language-bash">cd reference
+go test -race -count=1 -timeout=120s ./...
+go vet ./...
+go build -buildvcs=false ./...
+</code></pre>
+<p><code>-buildvcs=false</code> 用于避开本机上层空 <code>.git</code> 目录造成的 VCS stamping 错误。
+真实 VM 需要可访问的 <code>/dev/kvm</code>、QEMU、qemu-img、genisoimage、SSH、Go 和 Python 3。
+按 <a href="../VM-EXPERIMENTS.html">VM 说明</a>下载 Debian 12 genericcloud 与 crictl v1.29.0，
+用官方校验文件计算并核对 SHA，然后从仓库根运行：</p>
+<pre><code class="language-bash">python3 reference/tests/vm/run.py \
+  --image /path/to/base.qcow2 --sha512 &lt;image_SHA512&gt; \
+  --crictl /path/to/crictl.tar.gz --crictl-sha256 &lt;crictl_SHA256&gt; \
+  --output /tmp/opencode/n01-r01-new-output
+</code></pre>
+<p>guest 下载依赖需要代理时，可选 <code>--apt-proxy http://10.0.2.2:&lt;端口&gt;</code>。输出目录须为新目录。
+runner 会构建四个组件和测试镜像，启动 KVM、配置运行时、验收、取回日志、销毁 VM。
+整个过程不在宿主机创建 namespace、mount、cgroup、iptables、bridge、tap 或路由。
+输入文件由调用方管理，VM 的临时文件由 runner 管理。</p>
+<p>源码与本轮证据清单位于 <code>evidence/n01-r01-20261106/SHA256SUMS</code>，在仓库根目录运行
+<code>sha256sum -c docs/progress/evidence/n01-r01-20261106/SHA256SUMS</code> 复查。</p>
+<h2 id="接下来">接下来</h2>
+<p>R02 实现 Deployment 滚动更新与 Endpoints；P01 接入独立 Pod 网络、ClusterIP 分配及
+Service Proxy，随后 I01 把这些机制纳入完整集成验收。当前组件契约与运行记录可供后续
+实现和第三阶段教程使用。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

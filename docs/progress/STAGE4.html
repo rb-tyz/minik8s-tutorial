@@ -1,0 +1,154 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第四阶段：按原教程验收代码 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="第四阶段按原教程验收代码">第四阶段：按原教程验收代码</h1>
+<p>第四阶段已完成。独立 Bash 测试器按原教程 §5 的十个构建步骤验收代码，共 44 个检查点。
+参考实现通过完整 <code>--stage all</code>；容器、资源限制、镜像拉取、CNI 和 Service 转发已在隔离
+KVM 内运行。教程正文保持原样，本阶段补充测试说明和接入协议。</p>
+<h2 id="使用与交付">使用与交付</h2>
+<ul>
+<li><a href="../../grader/README.html">使用说明</a>：按 stage、单项或全量运行，查看结果和失败现场。</li>
+<li><a href="../../grader/docs/STAGES.html">检查点说明</a>：每项的测试方式、预期结果及原文章节。</li>
+<li><a href="../../grader/docs/ADAPTER.html">适配器协议</a>：组件生命周期、KV/CRI JSONL、CNI 与测试夹具。</li>
+<li><span class="local-artifact" title="本地工程附件：dist/minik8s-grader.tar.gz">独立交付包（本地工程附件）</span> 与 <span class="local-artifact" title="本地工程附件：dist/minik8s-grader.tar.gz.sha256">SHA256（本地工程附件）</span>。</li>
+</ul>
+<pre><code class="language-bash">bash grader/test.sh --list
+bash grader/test.sh --stage 4 --adapter /path/to/my-adapter \
+  --url http://127.0.0.1:18881 --output /tmp/my-stage4-new
+</code></pre>
+<p>每轮使用新的结果目录。完整阶段成功时 <code>summary.json</code> 中 <code>pass</code>、<code>stage_complete</code>、
+<code>cleanup</code> 均为 true。<code>--only ID</code> 的结果保留 <code>stage_complete=false</code>。失败返回非零，记录
+<code>failed_test</code>、请求、响应和组件日志；组件停止失败也会令整轮失败。</p>
+<h2 id="阶段与验证结果">阶段与验证结果</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>原教程</th>
+<th>内容</th>
+<th style="text-align: right;">检查点</th>
+<th>最终结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>§6</td>
+<td>手工容器、隔离、内核限制、退出</td>
+<td style="text-align: right;">3</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>2</td>
+<td>§7</td>
+<td>CRI 生命周期、退出码、镜像拉取</td>
+<td style="text-align: right;">3</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>3</td>
+<td>§8</td>
+<td>KV 版本、CAS、Watch、压缩、崩溃恢复</td>
+<td style="text-align: right;">5</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>4</td>
+<td>§9</td>
+<td>CRUD、PATCH、status、Binding、校验、重启</td>
+<td style="text-align: right;">6</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>5</td>
+<td>§10</td>
+<td>Watch 重放、初始快照、非法请求</td>
+<td style="text-align: right;">3</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>6</td>
+<td>§11</td>
+<td>Kubelet、资源、init、卷、拉取、重启与 API 中断</td>
+<td style="text-align: right;">8</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>7</td>
+<td>§12</td>
+<td>Scheduler 筛选、容量、init 资源与评分</td>
+<td style="text-align: right;">4</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>8</td>
+<td>§13</td>
+<td>RS、Deployment、Endpoints、重启恢复</td>
+<td style="text-align: right;">4</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>9</td>
+<td>§14</td>
+<td>CNI IPAM、CHECK、DEL、实际通信</td>
+<td style="text-align: right;">4</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>10</td>
+<td>§15</td>
+<td>ClusterIP、多端口、UDP、hairpin、后端变化与规则保留</td>
+<td style="text-align: right;">4</td>
+<td>通过</td>
+</tr>
+</tbody>
+</table></div>
+<p>Stage 7 使用 Node 对象观察调度和绑定；stage 8 为 Pod 写入测试状态观察控制器行为。
+Stage 6 和 10 检查实际容器及集成通信。Stage 0 对应前置阅读，无可执行检查。
+原文静态路由跨节点实验沿用 <code>grade.sh --case cross-node</code>，运行证据见
+<a href="ALIGNMENT.html">第二阶段报告</a>；本轮十阶段运行使用单个工作节点。</p>
+<h2 id="本轮证据">本轮证据</h2>
+<p>所有路径均位于 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107">stage4-20261107（本地工程附件）</span>。</p>
+<ol>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/certified-vm/guest/summary.json">完整 KVM 汇总（本地工程附件）</span>：
+   十阶段 44 项通过；在同一 VM、已有缓存条件下重新执行 CRI-PULL 和 NODE-PULL，通过。
+   每轮使用独立镜像 tag，实际经历首次缺失、拉取和运行。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/certified-vm/guest/all/summary.json">全阶段入口结果（本地工程附件）</span>：
+   <code>--stage all</code> 按顺序执行，十个子阶段分别保存结果。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/verified-final/summary.json">普通用户自检（本地工程附件）</span>：
+   将测试器复制到另一个名称的目录，通过外部适配器运行 stage 3/4/5/7/8，共 22 项通过。</li>
+<li>三个错误样本均被检出：旧 CAS 返回成功、DELETE 丢失旧值、CNI CHECK 永远返回成功。
+   前两项分别失败于 KV-CAS、KV-WATCH；第三项在 KVM 中失败于 CNI-CHECK。</li>
+<li>自检还验证未知 ID、错误 VM UUID、Python 优化模式下的运行时隔离检查、占用端口、
+   功能通过后停止失败。它们均按预期拒绝或判失败。</li>
+<li><span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/legacy-compatibility">旧版兼容性（本地工程附件）</span> 与
+   <span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/tutorial-compatibility">教程片段复验（本地工程附件）</span> 通过。
+   原有 76 个 Go/模块文件及原文、订正版正文保持原有内容。</li>
+</ol>
+<p>测试器只通过公布的 HTTP、JSONL、CNI 和组件启动脚本接入。参考实现专属转换保存在
+<code>reference/stage-adapter/</code> 与 <code>reference/cmd/grader-kv-driver/</code>；独立测试目录无需导入
+参考实现的 Go 包。提供的 Go 测试程序用于实际容器内断言，属于测试夹具。</p>
+<p>交付包另经 SHA256 校验、解压和目录改名，通过外部驱动执行五项真实 KV 检查，
+见 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/package-check/summary.json">打包迁移结果（本地工程附件）</span>。</p>
+<h2 id="复验命令">复验命令</h2>
+<p>普通用户自检：</p>
+<pre><code class="language-bash">python3 grader/verify-stages.py --output /tmp/minik8s-stages-check-new
+</code></pre>
+<p>按 <a href="../VM-EXPERIMENTS.html">VM 环境说明</a> 准备并校验输入后：</p>
+<pre><code class="language-bash">python3 reference/tests/vm/run.py \
+  --image "$LAB/base.qcow2" --sha512 "$IMAGE_SHA512" \
+  --crictl "$LAB/crictl.tar.gz" --crictl-sha256 "$CRI_SHA256" \
+  --staged-grader --output /tmp/minik8s-stages-vm-new
+</code></pre>
+<p>最终运行使用上述路径对应的本地输入，并配置 <code>--apt-proxy http://10.0.2.2:7897</code>。
+各轮 <code>inputs.json</code> 保存输入校验值，<code>payload-manifest.json</code> 保存实际执行载荷的 SHA256。</p>
+<h2 id="调试记录与清理">调试记录与清理</h2>
+<p>失败轮次保留在同一证据目录。主要修复包括：runc 后台子进程继承 stderr 管道导致等待；
+容器 exec 前读取隔离信息的竞态；CRI 包装器未沿用 sandbox 配置；滚动更新期间 Pod
+消失引发状态写入 404；Binding 夹具缺少身份字段；省略的 exitCode=0 默认值；Endpoints
+删除已完成但 Bash 函数继承失败退出码。修复后重新执行最终完整验收。</p>
+<p><code>certified-vm</code> 是冻结代码后的最终结果。最终 CRI sandbox/container 集合与网络命名空间
+均为空。每轮创建记录、UUID、销毁结果独立保存；最终 VM 已停止并删除临时磁盘、seed 和
+密钥，见 <span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/certified-vm/vm-delete.json">销毁结果（本地工程附件）</span>。
+宿主机仅进行普通构建、输入校验及 QEMU 用户态网络启动。所有特权实验均在核对 UUID
+的 KVM 内进行。本阶段 13 轮实验共创建 26 台临时 VM，均已停止销毁；任务下载缓存与临时二进制已删除。
+已有十台 libvirt VM 保持关闭状态。最终汇总与清理统计见
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/acceptance.json">acceptance.json（本地工程附件）</span> 和
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage4-20261107/host-cleanup.json">host-cleanup.json（本地工程附件）</span>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

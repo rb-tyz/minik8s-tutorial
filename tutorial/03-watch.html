@@ -1,0 +1,181 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>03 Watch：接住列表之后的每次变化 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="03-watch接住列表之后的每次变化">03 Watch：接住列表之后的每次变化</h1>
+<p>模块：<strong>基础层 Core / 事件流</strong>。依赖 01–02；原文 §10，订正对应 WATCH 与 KV 类记录。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>在已有 KV/HTTP API 上增加可续接的事件流。完成后，客户端能先 List，再从列表 RV 继续
+读变化，断线后恢复，历史丢失时重新同步，并在退出时释放连接。</p>
+<p>需要理解版本、channel、context、HTTP 流式读写。先用一个 Pod collection 和一个观察者
+完成算法，再增加多个前缀与慢客户端。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>只做 List，客户端需要不断读取整份集合；只订阅“现在以后”，又会漏掉建立连接前的变化。
+例如 List 得到 RV=10，Watch 建好前提交了 11，订阅者必须还能读到 11。</p>
+<p>后面的 Informer 把这条事件流变成缓存，控制器再用事件触发一次现状检查。事件本身不命令
+控制器执行一次创建；重复通知也应收敛到相同期望。</p>
+<pre><code class="language-text">KV 提交历史 -&gt; HTTP Watch -&gt; Informer -&gt; 待处理 key -&gt; reconcile
+</code></pre>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<pre><code class="language-text">GET &lt;collection&gt;?watch=true&amp;resourceVersion=10
+{"type":"MODIFIED","object":{...}}
+</code></pre>
+<p>每行一个 JSON，并及时 flush。类型有 ADDED、MODIFIED、DELETED、BOOKMARK、ERROR。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>resourceVersion</th>
+<th>起始行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>缺省</td>
+<td>当前对象快照，各发 ADDED；随后快照 BOOKMARK，再接实时变化</td>
+</tr>
+<tr>
+<td>显式 0</td>
+<td>重放保留窗口中的匹配事件，再接实时变化</td>
+</tr>
+<tr>
+<td>正整数 X</td>
+<td>交付匹配且 revision &gt; X 的提交</td>
+</tr>
+<tr>
+<td>非数字或负数</td>
+<td>422</td>
+</tr>
+<tr>
+<td>X 的历史已被压缩</td>
+<td>开流前返回 410 Expired；开流后用 ERROR 帧</td>
+</tr>
+</tbody>
+</table></div>
+<p>集合 RV 来自全局提交序列，因此可以跳号：其他资源也在写。客户端保存已经应用的 RV，
+不要用“当前帧 RV 必须等于上一帧加一”判断单个 collection 是否漏事件。</p>
+<p>详细帧格式与恢复行为见 <a href="../docs/contracts/api.html">API 契约</a> 和 <a href="../docs/contracts/kv.html">KV Watch 契约</a>。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="在提交点记录事件">在提交点记录事件</h3>
+<p>每次成功提交记录 type、key、commit revision、前一个版本和当前/删除前 value。
+首次 Put 是 ADDED，覆盖是 MODIFIED，Delete 用前值恢复完整对象。</p>
+<p>删除 a 前它的 modRevision=2，删除提交为 3：DELETE 响应可返回前值 RV=2，DELETED 事件
+则应带 RV=3，供消费者越过这次删除继续订阅。两者来自同一次提交，但承担不同职责。</p>
+<h3 id="历史与订阅者">历史与订阅者</h3>
+<p>维护有界历史、压缩边界、订阅者游标和有界待发队列。在存储锁内按同一顺序完成：</p>
+<pre><code class="language-text">检查起点是否仍可读 -&gt; 取得 catch-up -&gt; 注册实时接收者
+</code></pre>
+<p>提交也在同一锁顺序中加入历史与待发队列。网络发送在锁外进行；一个读得慢的客户端不应
+拖住所有写入。队列满时停止该订阅者并报告原因，禁止丢一条后继续伪装成完整流。</p>
+<p>压缩到 C 表示 &lt;=C 的历史被裁掉。Exact(C) 仍可从 C+1 开始；Exact(C-1) 需要重新 List。
+参考实现还能按历史条数/字节数限制保留窗口。</p>
+<h3 id="初始快照与-bookmark">初始快照与 bookmark</h3>
+<p>HTTP 缺省模式可以 Range 得到快照 S，再注册 Exact(S)。若期间压缩越过 S，重新取得快照。
+先发送整个快照，再发 BOOKMARK(S)，最后才发 &gt;S 的增量。客户端据此知道初始化边界。</p>
+<p>周期 bookmark 也要放在已安全交付的顺序中。存储“当前版本”可能领先于待发队列；提前发送
+这个版本会让断线客户端跳过尚未读到的事件。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>区分两种断线：历史已被压缩时重新 List；普通网络断开可从最后已应用 RV 继续。慢消费者
+的终止报告为服务不可用等原因，参考接口使用 503，和“历史已消失”的 410 分开。</p>
+<p>客户端逐行解码，不使用 ReadAll 等待流结束。流不套普通请求的总生命周期超时，但单次
+网络写仍有期限。context 取消、Stop、服务器 Shutdown 都要终止读写并等待 goroutine 退出。</p>
+<p>多个结束来源可能同时发生，应让取消、通道关闭和连接释放可重复处理。处理关闭通道时
+检查 ok；把已关闭 channel 一直放在 select 中，会产生空转或重复错误。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>本课程按资源前缀过滤，使用 HTTP NDJSON。原文 HTTP/2 与 HTTP/1.1 描述不一致，订正后
+保留事件协议，传输用现有 HTTP 服务。没有复杂 selector、分页、watch cache 或多路复用要求。</p>
+<p>BOOKMARK 的初始化用途和缺省/0/Exact 三态按本 MVP 契约验收；接口不承诺完整 Kubernetes
+选项兼容。学习者需要实现的是已公布的流、游标和恢复行为。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>任务</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>W1 提交事件</td>
+<td>在唯一提交点记录事件和前值</td>
+<td>数据、事件版本一致</td>
+</tr>
+<tr>
+<td>W2 精确续接</td>
+<td>有界历史、Exact 与压缩边界</td>
+<td>List/Watch 间隙可重放</td>
+</tr>
+<tr>
+<td>W3 订阅生命周期</td>
+<td>队列、取消、慢订阅者退出</td>
+<td>写入不被网络消费者阻塞</td>
+</tr>
+<tr>
+<td>W4 HTTP 流</td>
+<td>header、逐行编码/flush、ERROR 帧</td>
+<td>curl 可在连接保持时读到新帧</td>
+</tr>
+<tr>
+<td>W5 初始化</td>
+<td>快照/BOOKMARK/增量顺序、周期游标</td>
+<td>任意断点重连仍能恢复</td>
+</tr>
+</tbody>
+</table></div>
+<p>先完成 List→Exact，再补缺省快照和显式 0。用手算的提交序列检查交付顺序后，再并发创建、
+更新和断开连接。流式 client 与普通 CRUD client 分开实现。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>在 API 基础练习启动的临时服务上，可按以下顺序手动观察；API 和 NS 的设置见 <a href="labs/core.html">基础练习</a>：</p>
+<pre><code class="language-bash">rv=$(curl -fsS "$API/api/v1/namespaces/$NS/pods" | jq -r '.metadata.resourceVersion')
+# 先在另一个请求中创建对象，再订阅，检查 catch-up
+curl -NsS --max-time 10 "$API/api/v1/namespaces/$NS/pods?watch=true&amp;resourceVersion=$rv"
+</code></pre>
+<p><code>--max-time 10</code> 是终端实验的观察期限，curl 到期退出 28 属于这个命令的预期结束方式。
+完整可执行检查由 <span class="local-artifact" title="本地工程附件：tutorial/labs/run-core.py">run-core.py（本地工程附件）</span> 的 watch 步骤完成。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>实验</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List 后、订阅前写入</td>
+<td>收到对应 ADDED/MODIFIED</td>
+</tr>
+<tr>
+<td>初始化过程中继续提交</td>
+<td>快照都在初始化 bookmark 前，增量在后</td>
+</tr>
+<tr>
+<td>删除有 spec 的对象</td>
+<td>DELETED 带原 spec，RV 是删除提交版本</td>
+</tr>
+<tr>
+<td>压缩到 C</td>
+<td>C 可续接，C-1 返回过期</td>
+</tr>
+<tr>
+<td>观察者停止读取直到队列满</td>
+<td>它终止，其他观察者与写入继续</td>
+</tr>
+<tr>
+<td>EOF 后重连</td>
+<td>从最后应用版本续接</td>
+</tr>
+<tr>
+<td>客户端取消、API 优雅退出</td>
+<td>连接与读写协程结束</td>
+</tr>
+</tbody>
+</table></div>
+<p>参考检查为 <code>go test -race ./internal/kv ./internal/api ./internal/client</code>，从 reference/ 执行。
+记录见 <a href="../docs/progress/A02.html">A02</a> 与 <a href="../docs/progress/ALIGNMENT.html">对齐验收</a>。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>定位问题时列出提交 RV、注册点、已写出 RV 和客户端已应用 RV。curl 一直没有输出时，先看
+header 和 Flush，再查订阅队列；正常断开后缓存冻结，则检查读循环是否触发重连。</p>
+<p>慢消费者错误被误报成 410，会掩盖恢复原因。Delete 事件用旧 modRevision，也会让续接游标
+重复或错位。先用两次写入加一次删除的小序列复算，再增加并发。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §10；<a href="../audit/ERRORS.html">审计清单</a> 的 WATCH/KV 条目。</li>
+<li><a href="../docs/contracts/api.html">API</a>、<a href="../docs/contracts/kv.html">KV</a> 给出帧和存储边界。</li>
+<li>下一步：<a href="04-informer-queue.html">04 Informer/Queue</a>，把事件恢复成可查询的集合与待处理任务。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

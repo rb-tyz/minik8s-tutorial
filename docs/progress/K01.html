@@ -1,0 +1,289 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>K01 交接：单机 KV 提交与恢复 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="k01-交接单机-kv-提交与恢复">K01 交接：单机 KV 提交与恢复</h1>
+<h2 id="范围与文件">范围与文件</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reference/go.mod</code></td>
+<td><code>module minik8s</code>，<code>go 1.23.0</code>，无第三方依赖</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/store.go</code></td>
+<td>公开 API、CAS、revision、副本、Close、错误定义</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/log.go</code></td>
+<td>日志帧、写入/回滚、恢复扫描、提交事件状态转移</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/store_test.go</code></td>
+<td>基本语义、副本、排序、快照原子性、并发 CAS、错误、重启、混合并发</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/recovery_test.go</code></td>
+<td>尾部截断（4 种形态）、重复截断、中段损坏、坏帧、revision 跳跃、SIGKILL 子进程</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/failure_test.go</code></td>
+<td>写/同步/短写/回滚失败、关闭与目录错误（窄 seam + 真实 <code>/dev/full</code>）</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/format_test.go</code></td>
+<td>独立实现按文档格式读写日志，固定 magic/字段/校验和</td>
+</tr>
+<tr>
+<td><code>reference/internal/kv/event_test.go</code></td>
+<td>提交事件与状态同源、恢复回放 + 在线事件顺序</td>
+</tr>
+<tr>
+<td><code>reference/README.md</code>、<code>reference/README-zh_cn.md</code></td>
+<td>仅 K01 状态、构建/测试命令、后续顺序</td>
+</tr>
+<tr>
+<td><code>docs/contracts/kv.md</code></td>
+<td>固定签名、CAS、RV、失败与恢复语义、K02 事件接口</td>
+</tr>
+<tr>
+<td><code>docs/progress/K01.md</code></td>
+<td>本文件</td>
+</tr>
+</tbody>
+</table></div>
+<p>产品代码 643 行（<code>store.go</code> 333 + <code>log.go</code> 310），测试 1695 行。K01 只使用标准库，未创建独立 KV 进程（XC-001 采用 API Server 内嵌方案）。</p>
+<h2 id="设计与审计对应">设计与审计对应</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>设计点</th>
+<th>审计 ID</th>
+<th>落到实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API Server 内嵌、普通 Go 包</td>
+<td>XC-001</td>
+<td><code>internal/kv</code> 无 RPC、无 <code>cmd/</code></td>
+</tr>
+<tr>
+<td>相同内容 Put 推进 revision</td>
+<td>KV-006</td>
+<td>每次成功 Put 都分配新 RV；测试 <code>TestIdenticalPutAdvancesRevision</code></td>
+</tr>
+<tr>
+<td>事件不得别名调用方 slice</td>
+<td>KV-007</td>
+<td>Put 入口 copy、<code>applyRecord</code> copy、Get/Range/Put 返回 copy；测试 <code>TestGetReturnsIndependentCopies</code>、<code>TestCommitEventMatchesState</code></td>
+</tr>
+<tr>
+<td>Range 顺序</td>
+<td>KV-008</td>
+<td>契约选择按 key 排序；<code>TestRangeSortedAndFiltered</code></td>
+</tr>
+<tr>
+<td>持久化与崩溃恢复缺口</td>
+<td>AUDIT“KV、版本与恢复” / KV-009</td>
+<td>单文件追加日志、fsync 提交点、恢复与截断；K01 不做历史压缩（归 K02）</td>
+</tr>
+<tr>
+<td>Watch 事件数据与状态同源</td>
+<td>KV-001（预防）/ KV-005</td>
+<td><code>applyRecord</code> 同时更新状态并产出 <code>CommitEvent</code>，删除事件带 <code>PrevValue</code>，K02 从 <code>onCommit</code> 取事件</td>
+</tr>
+</tbody>
+</table></div>
+<p>K01 不实现 Watch/Compact，因此 KV-001/002/003/004 的订阅与压缩行为留待 K02；此处只保证它们所依赖的“提交顺序 + 事件内容”基础。</p>
+<h2 id="关键契约">关键契约</h2>
+<ul>
+<li><code>Open(path)</code>、<code>Get</code>、<code>Range(prefix)</code>、<code>Put(key,value,expect)</code>、<code>Delete(key,expect)</code>、<code>Close</code>。</li>
+<li><code>Expect</code>：<code>NoCondition()</code>、<code>MustNotExist()</code>、<code>MatchRevision(rev&gt;0)</code>；不存在的键做条件写返回 <code>ErrKeyNotFound</code>，版本不符返回 <code>ErrConflict</code>，<code>MatchRevision(&lt;=0)</code> 返回 <code>ErrInvalidExpect</code>。没有 <code>-1</code> 等魔法值。</li>
+<li><code>Range</code> 返回排序副本与同一临界区读出的快照 revision；空结果返回非 nil 空切片。</li>
+<li>成功 Put/Delete 各占一个 revision；失败操作、删除不存在键、非法输入、写/同步失败均不推进 revision。</li>
+<li><code>Delete</code> 返回删除前条目（<code>ModRevision</code> 为删除前版本），提交事件内的 <code>PrevValue</code> 留给 K02 生成 DELETED。</li>
+<li>提交点：完整帧 <code>write</code> + <code>fsync</code> 成功后才更新内存并返回；失败时截断回 <code>s.size</code> 并再次 fsync。回滚也失败则 <code>ErrLogFailed</code>，只读可用，需重新 <code>Open</code>。</li>
+<li>新建日志文件时 fsync 父目录；<code>EINVAL</code>/<code>ENOTSUP</code> 容忍。</li>
+<li>日志帧头为 magic + length + headerCRC（CRC-32C 覆盖前 8 字节），帧体为 payloadCRC + payload。</li>
+<li>恢复：尾部不足帧头，或帧头校验通过但长度超出 EOF → 截断并 fsync；magic/headerCRC/长度上限/payloadCRC/编码/revision 连续性/删除不存在键任一失败 → <code>*CorruptionError{Offset,Reason}</code>，文件不改动。headerCRC 确保“中段长度字段损坏”不会被误判为尾部半写。</li>
+</ul>
+<h2 id="实际命令与结果">实际命令与结果</h2>
+<p>所有命令在 <code>/home/imeltgp/VSCode/minik8s/reference</code> 执行；日志在 <code>/tmp/opencode/k01/</code>。最后一次源码修改是 18:25:41 的 <code>store.go</code> 注释修订；下表所有日志都生成于其后，且 <code>go.mod</code> 与 <code>internal/kv</code> 在本表执行后未再改动。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>命令</th>
+<th>退出码</th>
+<th>结果</th>
+<th>日志</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>go test ./internal/kv</code>（任务要求的首条，以 <code>-count=1</code> 禁用缓存）</td>
+<td>0</td>
+<td><code>ok minik8s/internal/kv 0.020s</code></td>
+<td><code>/tmp/opencode/k01/required-1.log</code></td>
+</tr>
+<tr>
+<td><code>go test -race ./internal/kv</code>（任务要求的第二条，以 <code>-count=1</code> 禁用缓存）</td>
+<td>0</td>
+<td><code>ok minik8s/internal/kv 1.087s</code></td>
+<td><code>/tmp/opencode/k01/required-2.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=1 ./internal/kv</code></td>
+<td>0</td>
+<td><code>ok minik8s/internal/kv 0.017s</code></td>
+<td><code>/tmp/opencode/k01/final-test.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=1 -race ./internal/kv</code></td>
+<td>0</td>
+<td><code>ok minik8s/internal/kv 1.081s</code></td>
+<td><code>/tmp/opencode/k01/final-test-race.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=1 -v ./internal/kv</code></td>
+<td>0</td>
+<td>34 个顶层 PASS + 4 个子测试 PASS + 1 个 helper SKIP，0 FAIL</td>
+<td><code>/tmp/opencode/k01/final-verbose.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=1 -cover ./internal/kv</code></td>
+<td>0</td>
+<td><code>coverage: 91.0% of statements</code></td>
+<td><code>/tmp/opencode/k01/cover.log</code></td>
+</tr>
+<tr>
+<td><code>gofmt -l .</code></td>
+<td>0</td>
+<td>无输出</td>
+<td><code>/tmp/opencode/k01/static.log</code></td>
+</tr>
+<tr>
+<td><code>go vet ./...</code></td>
+<td>0</td>
+<td>无输出</td>
+<td><code>/tmp/opencode/k01/static.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=20 ./internal/kv</code></td>
+<td>0</td>
+<td>全通过（稳定性抽查）</td>
+<td><code>/tmp/opencode/k01/repeat20.log</code></td>
+</tr>
+<tr>
+<td><code>go test -race -count=5 ./internal/kv</code></td>
+<td>0</td>
+<td>全通过</td>
+<td><code>/tmp/opencode/k01/repeat5race.log</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>顶层测试清单（34 PASS / 1 SKIP）：</p>
+<pre><code class="language-text">TestCommitSinkSeesRecoveryAndLiveOrder
+TestWriteErrorLeavesStateAndRevisionUnchanged
+TestSyncErrorLeavesStateAndRevisionUnchanged
+TestShortWriteIsRolledBack
+TestFailedRollbackDisablesWritesButNotReads
+TestOpenFailsOnUnwritablePath
+TestRealFilesystemWriteFailure
+TestRecoveryTruncateFailureIsReported
+TestCloseReportsSyncFailure
+TestLogLayoutIsStable
+TestRecoveryReadsIndependentlyBuiltLog
+TestIndependentFrameChecksumDetectsDamage
+TestRecoveryTruncatesIncompleteTail
+TestRecoveryRepeatedTornTail
+TestRecoveryRejectsCorruptionInMiddle
+TestRecoveryRejectsBadFrames
+TestRecoveryRejectsRevisionGap
+TestRecoveryRejectsDeleteOfMissingKey
+TestHelperKilledAfterAck            (SKIP：仅在子进程模式运行)
+TestCorruptedLengthInMiddleIsNotTreatedAsTornTail
+TestHardKillKeepsAcknowledgedWrites
+TestCreateOverwriteGetDelete
+TestGetReturnsIndependentCopies
+TestRangeSortedAndFiltered
+TestRangeIsAtomicSnapshot
+TestConcurrentCASAtSameRevision
+TestConditionalWriteSemantics
+TestDeleteErrors
+TestIdenticalPutAdvancesRevision
+TestInvalidInputAndClose
+TestCommitEventMatchesState
+TestReopenRestoresStateAndCAS
+TestConcurrentMixedOperations
+TestConcurrentDeleteAtSameRevision
+TestBinaryAndLargeValues
+</code></pre>
+<h3 id="断言要点">断言要点</h3>
+<ul>
+<li>创建/覆盖/读取/排序 Range/删除：revision 依次 1→2→3，重建后 create=4；<code>Range("/pods/")</code> 只返回 3 条且有序。</li>
+<li>副本：修改入参 buffer、Get/Put/Range 返回值后，存储内容不变。</li>
+<li>Range 原子性：200 次并发写入期间反复 Range，每次断言 <code>len(entries)==rev</code>、第 i 个键为 <code>/k%03d</code>、条目版本为 i+1；最终 rev=200。</li>
+<li>并发 CAS：16 个 goroutine 用同一 <code>MatchRevision(1)</code> 写同一键，恰好 1 个成功、15 个 <code>ErrConflict</code>，revision 只加 1。并发删除同 RV：1 个成功，其余 <code>ErrKeyNotFound</code>，revision 只加 1。</li>
+<li>错误与 Close：空 key、超大值、CAS 失败、删除不存在键均不改状态/RV；Close 后四类操作返回 <code>ErrClosed</code>，重开文件为空且 rev=0。</li>
+<li>重启：5 次提交（含覆盖与删除）后重开，rev=5、<code>/a</code> create=1/mod=2、<code>/b</code> 不存在、<code>/c</code> mod=5；继续 CAS 成功一次、旧版本失败一次，rev=6；再重开仍为 6。</li>
+<li>子进程强杀：helper 打开同一日志、成功 Put 并打印 <code>acked 2</code>，父进程收到确认后 <code>Process.Kill()</code>（SIGKILL，helper 未 Close）；重开得到 rev=2、<code>/crash</code>=<code>acknowledged</code>，随后 Put 得到 rev=3。</li>
+<li>尾部截断：分别追加 3 字节半帧头、完整帧头+2 字节 payload、缺 1 字节的帧、1 字节帧头；四种情况重开后文件被截回原长度、rev=2、<code>/torn</code> 不存在、继续写得到 rev=3，再次重开仍为 3。<code>TestRecoveryRepeatedTornTail</code> 连续 3 轮“截断→恢复→写一条→关闭”。</li>
+<li>中段损坏：翻转第 2 条记录 payload 的字节；<code>Open</code> 返回 <code>*CorruptionError</code>，<code>Offset</code> 精确等于第 2 帧起点，<code>ErrCorrupt</code> 可 <code>errors.Is</code>；文件大小不变；人工保留前缀后可单独打开。另有坏 magic、revision 从 1 跳到 3、删除不存在键三种语义损坏，均在对应帧偏移报错。第 2 帧长度字段被改成“大于剩余字节”时也报损坏而非截断，文件不被改写。</li>
+<li>写入/同步失败：seam 注入写错误、短写、同步错误；失败后值、modRevision、全局 revision 均不变；短写被截断回原长度；介质恢复后可继续写；回滚 <code>Truncate</code> 也失败时后续写返回 <code>ErrLogFailed</code> 而读仍可用。另用真实 <code>/dev/full</code> 走无 hook 的 ENOSPC 路径。</li>
+<li>提交事件：恢复时按 revision 回放 3 条事件，随后在线 Put 追加第 4 条；失败的 CAS 不产生事件；事件值不别名存储。</li>
+</ul>
+<h3 id="重复运行">重复运行</h3>
+<pre><code class="language-text">$ go test -count=20 ./internal/kv
+ok      minik8s/internal/kv 0.301s
+
+$ go test -race -count=5 ./internal/kv
+ok      minik8s/internal/kv 1.350s
+</code></pre>
+<p>日志：<code>/tmp/opencode/k01/repeat20.log</code>、<code>/tmp/opencode/k01/repeat5race.log</code>，两者 <code>EXIT=0</code>。</p>
+<h2 id="失败与修复">失败与修复</h2>
+<ol>
+<li><code>TestSyncErrorLeavesStateAndRevisionUnchanged</code> 首次失败：注入的同步错误同时命中了回滚后的 fsync，导致 <code>Close</code> 返回错误、测试提前 <code>t.Fatalf</code>。结论是行为正确（回滚同步失败须上报），修测试：先解除注入再关闭，并断言 <code>ErrLogFailed</code> 场景另行覆盖。</li>
+<li><code>TestRangeIsAtomicSnapshot</code> 首版用 <code>progress &lt;- struct{}{}</code> 无缓冲通道，写入方与读取方互相等待，测试耗时 10s 超时。改为轮询 + 独立完成通道 + 10s 截止，降到毫秒级。</li>
+<li>目录 <code>fsync</code> 在部分文件系统返回 <code>EINVAL</code>：最初把任何错误都当致命，改为仅容忍 <code>EINVAL</code>/<code>ENOTSUP</code>，其余错误使 <code>Open</code> 失败（<code>TestRecoveryTruncateFailureIsReported</code> 等仍覆盖失败路径）。</li>
+<li>首版把状态更新和事件构造分别写在 Put/Delete 与恢复里，存在分叉风险；改为单一 <code>applyRecord</code> 同时产出状态与 <code>CommitEvent</code>，并加 <code>TestCommitEventMatchesState</code>、<code>TestCommitSinkSeesRecoveryAndLiveOrder</code> 固定行为。</li>
+<li>首版 <code>appendRecord</code> 在写失败后不截断，下一次追加可能接在半帧之后；改为按 <code>s.size</code> 回滚并区分“回滚失败 → <code>ErrLogFailed</code>”。</li>
+<li>自审发现格式缺陷：没有头部校验和时，中段记录的长度字段损坏且“声明长度大于剩余字节”会被误判为尾部半写，恢复会截掉其后的正常记录。修复为在帧头加入 <code>headerCRC</code>（覆盖 magic+length，帧头从 12 字节变为 16 字节），并新增 <code>TestCorruptedLengthInMiddleIsNotTreatedAsTornTail</code>。该改动在最终测试前完成，契约已同步。</li>
+</ol>
+<h2 id="已验证范围">已验证范围</h2>
+<ul>
+<li>普通用户态、单进程 <code>internal/kv</code> 包级行为，含 <code>-race</code>。</li>
+<li>真实文件系统（<code>t.TempDir()</code>）上的持久化、重启、尾部截断、中段损坏。</li>
+<li>通过 <code>os/exec</code> 启动同一测试二进制的子进程，SIGKILL 后重开验证已确认写入。</li>
+<li>写入/同步错误通过窄文件 seam 与 <code>/dev/full</code> 两条路径验证。</li>
+</ul>
+<h2 id="未执行检查与原因">未执行检查与原因</h2>
+<ul>
+<li>未验证多进程/多实例同时打开同一日志；K01 契约明确不支持，K02 也不需要。</li>
+<li>未做掉电/断电级测试；SIGKILL + fsync 语义已覆盖，块设备层故障需特权实验环境，按 AGENTS.md 未在宿主机执行。</li>
+<li>未做磁盘满场景下的回滚后长期运行；写失败路径已覆盖，未做容量阈值策略。</li>
+<li>未实现 Watch/Compact，因此没有订阅、历史重放、慢消费者、压缩边界测试（K02）。</li>
+<li>未做 API/HTTP 层 RV 编码与 409 映射（A01）。</li>
+</ul>
+<h2 id="k02-依赖">K02 依赖</h2>
+<ul>
+<li>事件来源：<code>openWithSink(path, func(CommitEvent))</code> 在恢复期间按 revision 顺序回放全部记录，随后每次在线提交在持锁、持久化成功后回调。K02 用它填充 history，保证与当前状态同序。</li>
+<li><code>CommitEvent</code> 字段：<code>Type</code>、<code>Key</code>、<code>Revision</code>、<code>CreateRevision</code>、<code>PrevRevision</code>、<code>Value</code>、<code>PrevValue</code>；DELETE 的 <code>PrevValue</code> 是删除前值（KV-005）。</li>
+<li><code>EventDelete</code>/<code>EventPut</code> 常量已导出；<code>Entry</code> 的 <code>ModRevision</code> 可直接作为 item RV。</li>
+<li>需要 K02 自行处理：注册窗口、<code>startRev</code> 游标、慢消费者、<code>Compact</code> 裁剪与 <code>ErrCompacted</code>。<code>Store</code> 目前不保留历史；K02 应把 history 放在 <code>Store</code> 内（或包内旁路类型），通过 <code>openWithSink</code> 的 sink 参数在 <code>Open</code> 时安装，使恢复回放与在线提交进入同一历史。</li>
+<li>注意：<code>openWithSink</code> 目前是包内函数（未导出），K02 在同一包内扩展即可；若外部需要测试入口再评估是否导出，不要为 K02 预先加导出 API。</li>
+<li>已知文档陈旧点：<code>docs/progress/00-ARCHITECTURE.md</code> 仍写着“<code>reference/</code> 尚未创建”，该文件不在 K01 修改范围，由委派者在合并 K01 后更新。</li>
+</ul>
+<h2 id="文件校验和">文件校验和</h2>
+<pre><code class="language-text">c14757c3d586668c9b6f1baf22f6e37c6ab5f2c8f40a0df21a730d241d468267  internal/kv/event_test.go
+aad7610840acf15a3d427c36bdaffe0c01e5130732562bd2524b86436f0ceb09  internal/kv/failure_test.go
+5c067a308e94a2e70158698fc67c88b35db67a5a9324507a0f5dc0230748d1bc  internal/kv/format_test.go
+f33b8c21146b960ced8c9acd99c44cb10e7fd8b471a9c26321d9ba8422398f37  internal/kv/log.go
+975fcea28bb960b9827d242f722bf1d60ecc481e5b19eedcacb91fbcdd4f0946  internal/kv/recovery_test.go
+fc982aff6339a1a908ed29b0bcb350e6214280f96bc24228b4055de3e449586b  internal/kv/store.go
+913d9d0dcc89b55b6a7959837496e2118f6063f67d7d39d97905995c69ab401e  internal/kv/store_test.go
+c63ae97b1c1de7e574ec70a7dc28b71459c7fb70653f8d1338e84d96c761451e  go.mod
+</code></pre>
+<p>校验和生成于最终测试通过之后；若后续修改文件需重新生成。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

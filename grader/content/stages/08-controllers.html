@@ -1,0 +1,44 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 8：让系统持续维持期望状态 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-8让系统持续维持期望状态">小节 8：让系统持续维持期望状态</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在本小节，你要实现 ReplicaSet、Deployment 和 Endpoints 控制器。用户描述希望有几个
+副本、运行哪个版本、哪些 Pod 属于某个 Service，控制器负责持续调整实际对象。
+对应教程第 13 节。</p>
+<h2 id="删除一个-pod为什么会自动补回来">删除一个 Pod，为什么会自动补回来？</h2>
+<p>ReplicaSet 保存期望副本数和 Pod 模板。控制器找出属于它的活跃 Pod，比较数量，再创建或删除。</p>
+<pre><code class="language-text">期望副本：2
+实际副本：1
+本轮操作：按模板创建 1 个 Pod
+下一轮：重新观察，确认副本数已经达到 2
+</code></pre>
+<p>名称和 label 用来查找对象，owner UID 用来确认归属。删除一个副本后，补出的 Pod 应有
+新的 UID；名称或 label 相同的独立 Pod，也要按归属规则处理。</p>
+<h2 id="一次处理之后还要继续观察">一次处理之后，还要继续观察</h2>
+<p>Informer 保存对象的本地观察结果，变化时把相关对象的 key 放入 WorkQueue。控制器取出 key，
+重新读取当前状态并执行调谐。相同 key 可以合并，处理失败则稍后重试；处理期间发生的新变化
+也要有再次处理的机会。</p>
+<p>控制器重启后，先观察已有子对象，接着完成未实现的期望状态。例如原来的两个 Pod 仍在，
+副本数改为三个后，应只补出缺少的一个。</p>
+<h2 id="更新版本与生成后端">更新版本与生成后端</h2>
+<p>Deployment 通过 ReplicaSet 分批切换模板。测试使用两个副本，更新期间允许最多三个 Pod，
+并逐步提供就绪状态。控制器需要等待新副本就绪，再缩减旧副本。</p>
+<p>Endpoints 控制器根据 Service 的 selector 找到就绪 Pod，并解析 targetPort。
+Pod 不再就绪时撤下后端；Service 删除后清理自动生成的 Endpoints。</p>
+<h2 id="测试如何运行">测试如何运行</h2>
+<p>本小节在普通用户环境运行，测试器通过 <code>/status</code> 提供 Pod 观察值：</p>
+<ul>
+<li><code>CTRL-RS</code>：归属判断、补副本、保留独立 Pod，以及父对象删除后的回收。</li>
+<li><code>CTRL-ROLL</code>：滚动更新的副本数量与最终模板。</li>
+<li><code>CTRL-ENDPOINTS</code>：命名端口、就绪变化和 Service 删除。</li>
+<li><code>CTRL-RESTART</code>：重启后接着调谐，保留已有子 Pod 身份。</li>
+</ul>
+<h2 id="提示">提示</h2>
+<p>先完成 ReplicaSet 的一轮调谐，再加入事件通知、重试与重启恢复。每轮都从当前对象计算
+差额，创建或删除后重新观察，便于处理请求失败和部分成功。</p>
+<h2 id="按-stage-提交">按 stage 提交</h2>
+<p>本小节分为 9 个 stage。先查看第一项任务：</p>
+<pre><code class="language-bash">minik8s stage 8.1
+</code></pre>
+<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
+临时练习时指定完整编号，例如：</p>
+<pre><code class="language-bash">minik8s submit --stage 8.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

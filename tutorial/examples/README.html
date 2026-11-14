@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>课程示例对象 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="课程示例对象">课程示例对象</h1>
+<p>四份 JSON 均由真实 API 校验。pod/replicaset/deployment 分别演示三个创建层级；
+Service 选择 Deployment 的 app=course-web，端口 80 对应 Pod 的命名端口 web=8080。
+它们采用不同 app 标签，便于在同一 namespace 中观察归属。</p>
+<p>metadata.namespace 留给请求 URL 或 CLI --namespace。resources.cpu=50 为毫核，
+memory=67108864 为字节。示例镜像由 VM 环境构建并导入，它的 HTTP 响应为 POD_MARK；
+准备过程见 <a href="../10-integration.html">集成章</a>。这些 JSON 是 MiniK8s 公共格式，真实 Kubernetes
+的 resources/strategy 等字段格式有差异。</p>
+<p>API 练习只启动 API；实际工作负载练习在已批准的 VM 中运行，见 <a href="../labs/workloads.html">workloads</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

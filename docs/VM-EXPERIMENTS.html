@@ -1,0 +1,75 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第一阶段 KVM 实验复现 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="第一阶段-kvm-实验复现">第一阶段 KVM 实验复现</h1>
+<p>本轮已在新建 KVM 中完成内核、运行时、网络与真实 CRI 复验。正式自动流程为 <code>audit/vm/run.py</code>：创建两台 guest，核对 UUID，安装工具，运行断言，检查资源清理，停止 VM，删除临时 overlay、seed 与 SSH key。</p>
+<p>宿主机使用普通用户的 QEMU KVM、qcow2 overlay、user 网络和回环 socket 链路。SSH 和两 VM 之间的虚拟链路使用动态回环端口。宿主机不执行 mount、namespace、iptables、tap、网桥或路由配置。特权操作均通过 SSH 在经 UUID 核实的 guest 内执行。</p>
+<h2 id="经过验证的环境">经过验证的环境</h2>
+<ul>
+<li>宿主机工具：qemu-system-x86_64、qemu-img、genisoimage、ssh/scp、Go、Python 3；用户可读写 <code>/dev/kvm</code>。</li>
+<li>镜像：Debian 官方 bookworm genericcloud amd64，原始 SHA-512 见 <code>audit/evidence/logs/delivery/image-checksum.log</code>。</li>
+<li>guest：Debian 12，Linux 6.1.0-54-cloud-amd64，runc 1.1.5，containerd 1.6.20，iptables 1.8.9。</li>
+<li>CRI 客户端：官方 crictl v1.29.0，SHA-256 见 delivery/crictl-checksum.log。</li>
+<li>每台 VM：2 vCPU、1536 MiB RAM、8 GiB 稀疏 overlay。base 镜像和下载文件另占约 400 MiB；VM 写入空间视依赖安装量而定。</li>
+</ul>
+<h2 id="下载与校验">下载与校验</h2>
+<p>只在用户已批准创建实验 VM 后运行。下列宿主机命令下载普通文件、构建 Go helper，并由 QEMU 启动独立 guest：</p>
+<pre><code class="language-bash">LAB=$(mktemp -d /tmp/minik8s-inputs.XXXXXX)
+CLOUD=https://cloud.debian.org/images/cloud/bookworm/latest
+curl -fL "$CLOUD/debian-12-genericcloud-amd64.qcow2" -o "$LAB/base.qcow2"
+curl -fL "$CLOUD/SHA512SUMS" -o "$LAB/SHA512SUMS"
+IMAGE_SHA512=$(awk '/debian-12-genericcloud-amd64.qcow2$/ {print $1}' "$LAB/SHA512SUMS")
+printf '%s  %s\n' "$IMAGE_SHA512" "$LAB/base.qcow2" | sha512sum -c -
+CRI=https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.29.0
+curl -fL "$CRI/crictl-v1.29.0-linux-amd64.tar.gz" -o "$LAB/crictl.tar.gz"
+curl -fL "$CRI/crictl-v1.29.0-linux-amd64.tar.gz.sha256" -o "$LAB/crictl.sha256"
+CRI_SHA256=$(awk '{print $1}' "$LAB/crictl.sha256")
+printf '%s  %s\n' "$CRI_SHA256" "$LAB/crictl.tar.gz" | sha256sum -c -
+</code></pre>
+<p>镜像 latest 路径会更新，重跑会记录实际镜像和包版本。需要复现本次字节时，使用与 image-checksum.log 匹配的镜像归档。</p>
+<h2 id="自动执行">自动执行</h2>
+<p>从项目根目录运行，输出目录必须尚不存在：</p>
+<pre><code class="language-bash">python3 audit/vm/run.py \
+  --image "$LAB/base.qcow2" --sha512 "$IMAGE_SHA512" \
+  --crictl "$LAB/crictl.tar.gz" --crictl-sha256 "$CRI_SHA256" \
+  --output /tmp/minik8s-vm-verification
+</code></pre>
+<p>guest 需要下载 Debian 软件包。若依赖宿主机回环代理，可额外指定 <code>--apt-proxy http://10.0.2.2:&lt;代理端口&gt;</code>；这次使用 7897。10.0.2.2 是 QEMU user 网络内访问宿主机的地址。代理参数不包含账号凭据。</p>
+<p>创建记录含每台 VM 的 UUID、PID、SSH 端口及完整 QEMU 命令。cloud-init seed 作为只读 virtio 磁盘附加，避免 genericcloud 内核缺少光驱驱动而跳过配置。身份保护读取 product_uuid 并与本次创建记录比较；还要求 disposable 标记和 KVM 类型。工具安装、服务配置、mount、netns、cgroup、iptables 均在核实身份后的 guest 里执行。</p>
+<p>步骤分别保存输出与退出码，内外均有超时。VM 有一小时 PID/UUID 检查的停止 watchdog；正常流程和实验失败路径会调用 stop。VM 目录在确认停止后删除；停止失败时保留目录与日志供回收。调用方下载的输入缓存由调用方在验收后删除：</p>
+<pre><code class="language-bash">rm -rf -- "$LAB"
+</code></pre>
+<h2 id="实验与证据">实验与证据</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>helper.go</td>
+<td>静态 Go helper；PID namespace、受保护的 pivot_root、退出码 42 与短 ID 切片</td>
+</tr>
+<tr>
+<td>make_image.py</td>
+<td>将 helper 构成本地 OCI 镜像，CRI 测试无需拉取外部容器镜像</td>
+</tr>
+<tr>
+<td>guest/acceptance.py</td>
+<td>9 组实际内核/runc/CNI/proxy 断言和资源清理</td>
+</tr>
+<tr>
+<td>guest/cri_acceptance.py</td>
+<td>containerd CRI v1 创建 sandbox 和容器，核对 EXITED/42 后清理并恢复配置</td>
+</tr>
+<tr>
+<td>cross_node.py</td>
+<td>两 KVM 的静态路由、VIP DNAT、返程失败/SNAT 恢复、独立 IPAM 状态对照和清理</td>
+</tr>
+<tr>
+<td>guest/final_cleanup.py</td>
+<td>两台 guest 的 netns、链路、规则、挂载、进程、cgroup 与服务终态</td>
+</tr>
+</tbody>
+</table></div>
+<p>正式结果位于 <code>audit/evidence/logs/delivery/fresh-vm/</code>。summary.json 为 9 组内核、7 组跨节点、CRI exitCode=42、两节点最终清理；vm-delete.json 确认进程停止和临时目录移除。host-cleanup.json 另记录初始启动调试及手动实验 VM、输入缓存与私人文件回收。现有 libvirt VM 的关机状态保存在 existing-vms-after.log。</p>
+<p>原 Shell 探针保留用于回溯；正式复验采用上述 Python 断言脚本。原六项 PENDING 的结项结果在 audit/experiments.json：真实机制已运行，原文缺失的 KV 持久化、完整 IPAM/控制器实现列入第二阶段。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Core 实验：先让对象正确地存取和变化 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="core-实验先让对象正确地存取和变化">Core 实验：先让对象正确地存取和变化</h1>
+<p>本练习对应 01–04 章。API 是一个普通用户进程，以下命令从仓库根目录运行。
+需要 Go 1.23+、Python 3、Bash、curl、jq、timeout。缓存与队列的局部测试接在 HTTP 检查之后。</p>
+<h2 id="一次运行公开检查">一次运行公开检查</h2>
+<pre><code class="language-bash">COURSE_BIN=$(mktemp -d /tmp/minik8s-course-bin.XXXXXX)
+(cd reference &amp;&amp; go build -buildvcs=false -o "$COURSE_BIN/mini-apiserver" ./cmd/mini-apiserver)
+python3 tutorial/labs/run-core.py --api-binary "$COURSE_BIN/mini-apiserver" \
+  --output /tmp/opencode/course-core-new
+rm -r "$COURSE_BIN"
+</code></pre>
+<p>输出目录每次换一个尚不存在的名字。脚本启动独立 API，自动选择端口；依次调用公开 grader
+的 api、patch、watch，并 POST/GET/DELETE 四份课程示例。最后停止进程并删除本次 WAL。
+summary.json 应有 pass=true、三个通过的 checks、example_checks=4，以及进程和 WAL 清理结果。
+examples.json 保存每个示例的请求与实际 API 响应；每个 grader 子目录另有断言与清理日志。</p>
+<p>已有自己的 API 时使用：</p>
+<pre><code class="language-bash">python3 tutorial/labs/run-core.py --url http://127.0.0.1:8080 \
+  --output /tmp/opencode/course-own-api-new
+</code></pre>
+<p>此模式运行三项公开检查，退出时保留原 API 进程。示例校验只在脚本自建的 API 中运行，
+便于先学对象格式，再接节点。API 的启动适配参数可以不同，HTTP 行为按契约保持一致。</p>
+<h2 id="各检查点为什么存在">各检查点为什么存在</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>输入与预期</th>
+<th>失败时看哪里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>api</td>
+<td>创建后读回 UID/RV；旧 RV PUT/DELETE 409；当前 RV 删除 200</td>
+<td>method/path、冲突前后的 RV</td>
+</tr>
+<tr>
+<td>patch</td>
+<td>修改嵌套标签、删除 null 字段、用旧 RV 重试</td>
+<td>合并后的对象是否保留未修改字段</td>
+</tr>
+<tr>
+<td>watch</td>
+<td>List 后创建、续接 List RV，再删除</td>
+<td>两条事件的顺序、对象 UID、删除提交 RV</td>
+</tr>
+<tr>
+<td>examples</td>
+<td>四个完整 JSON 经实际 POST/GET，再删除</td>
+<td>API 校验错误、字段类型和 selector</td>
+</tr>
+</tbody>
+</table></div>
+<p>API 确认写入后的进程恢复另由 <code>reference/scripts/verify-a01.py</code> 检查；普通目录下运行，
+输出目录也应为新路径。该程序会构建并管理自己的 API 进程，保留重启前后的对象。</p>
+<h2 id="用-curl-看一次完整对象">用 curl 看一次完整对象</h2>
+<p>如需交互，另开终端启动 <code>mini-apiserver --listen 127.0.0.1:8080 --data /tmp/course-interactive.wal</code>，
+只启动 API。另一个终端：</p>
+<pre><code class="language-bash">API=http://127.0.0.1:8080
+NS=course-interactive
+curl -fsS -H 'Content-Type: application/json' \
+  --data-binary @tutorial/examples/pod.json "$API/api/v1/namespaces/$NS/pods" | jq .
+curl -fsS "$API/api/v1/namespaces/$NS/pods/course-pod" &gt; /tmp/course-pod.json
+RV=$(jq -r .metadata.resourceVersion /tmp/course-pod.json)
+jq -n --arg rv "$RV" '{metadata:{resourceVersion:$rv,labels:{lesson:"api"}}}' &gt; /tmp/course-patch.json
+curl -fsS -X PATCH -H 'Content-Type: application/merge-patch+json' \
+  --data-binary @/tmp/course-patch.json "$API/api/v1/namespaces/$NS/pods/course-pod" | jq .
+curl -fsS -X DELETE "$API/api/v1/namespaces/$NS/pods/course-pod" | jq .
+</code></pre>
+<p>应观察到 UID 保持、RV 增加、原 app 标签保留、新 lesson 标签出现。重发旧 patch 返回 409。
+交互结束 Ctrl-C 停 API，确认退出后删除本次 WAL 和 /tmp/course-*.json 中本次创建的文件。</p>
+<h2 id="再测缓存与队列">再测缓存与队列</h2>
+<p>参考实现的普通用户检查：</p>
+<pre><code class="language-bash">(cd reference &amp;&amp; go test -race -count=1 -timeout=120s ./internal/kv ./internal/api ./internal/informer ./internal/workqueue)
+</code></pre>
+<p>自己的实现可采用不同包名。按第 04 章构造 List 失败后恢复、410 重列、同名换 UID、回调修改
+副本、处理中重复 Add、延迟重试取消和退出等场景。每项断言对象变化或 worker 次数，
+为等待设置期限；比较日志数量时先确保后台协程已经退出。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

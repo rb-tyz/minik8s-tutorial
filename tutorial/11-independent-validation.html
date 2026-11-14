@@ -1,0 +1,123 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>11 实验与教程覆盖检查 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="11-实验与教程覆盖检查">11 实验与教程覆盖检查</h1>
+<p>验收依据是参考实现的实验正确性，以及教程对实现机制和实验步骤的覆盖。学习者反馈作为
+后续改进材料。本表用于逐章检查这两项依据。</p>
+<h2 id="逐章对应">逐章对应</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>教程入口</th>
+<th>契约与实验依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>对象、数据流、环境与版本</td>
+<td><a href="00-map-and-lab.html">00 系统导图</a></td>
+<td><a href="../docs/MVP-SCOPE.html">教学范围</a>、<a href="../docs/contracts/ARCHITECTURE.html">架构</a></td>
+</tr>
+<tr>
+<td>KV、revision/CAS、日志与恢复</td>
+<td><a href="01-kv.html">01 KV</a></td>
+<td><a href="../docs/contracts/kv.html">KV 契约</a>、KV 单元/恢复实验</td>
+</tr>
+<tr>
+<td>CRUD、身份、Merge PATCH、CLI</td>
+<td><a href="02-api.html">02 API</a></td>
+<td><a href="../docs/contracts/api.html">API 契约</a>、API/CLI HTTP 与进程检查</td>
+</tr>
+<tr>
+<td>Watch 历史、顺序、断线与取消</td>
+<td><a href="03-watch.html">03 Watch</a></td>
+<td>API/Watch 契约、并发与流生命周期实验</td>
+</tr>
+<tr>
+<td>缓存与工作队列</td>
+<td><a href="04-informer-queue.html">04 Informer/Queue</a></td>
+<td><a href="../docs/contracts/informer-queue.html">契约</a>、同步/去重/退避/退出测试</td>
+</tr>
+<tr>
+<td>资源计算、比例评分与绑定</td>
+<td><a href="05-scheduler.html">05 Scheduler</a></td>
+<td><a href="../docs/contracts/scheduler.html">契约</a>、异构节点测试与双节点实际调度</td>
+</tr>
+<tr>
+<td>镜像、sandbox、容器、init/重启、限制与 hostPath</td>
+<td><a href="06-kubelet-runtime.html">06 Runtime</a>、<a href="labs/cri.html">CRI 操作实验</a></td>
+<td><a href="../docs/contracts/kubelet-runtime.html">运行时契约</a>、实际 CRI/卷/拉取与内核状态</td>
+</tr>
+<tr>
+<td>RS 副本、归属、失败重试与清理</td>
+<td><a href="07-replicaset.html">07 ReplicaSet</a></td>
+<td><a href="../docs/contracts/replicaset.html">契约</a>、删除补副本/缩扩容/恢复实验</td>
+</tr>
+<tr>
+<td>滚动预算与就绪后端</td>
+<td><a href="08-deployment-endpoints.html">08 Deployment/Endpoints</a></td>
+<td><a href="../docs/contracts/deployment-endpoints.html">契约</a>、真实更新与后端变化</td>
+</tr>
+<tr>
+<td>CNI、ARP/IP 复用、NAT、静态路由和多节点代理</td>
+<td><a href="09-pod-network-service.html">09 网络/Service</a></td>
+<td><a href="../docs/contracts/network-proxy.html">网络契约</a>、双向 PodIP/ClusterIP、TCP/UDP/hairpin 与清理</td>
+</tr>
+<tr>
+<td>完整部署、更新、恢复与回收</td>
+<td><a href="10-integration.html">10 集成</a></td>
+<td><a href="../docs/progress/ALIGNMENT.html">验收报告</a>、<a href="../grader/README.html">独立 Bash 测试器</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>最新实现的逐项实验 ID、测试入口和结果见验收报告中的 ORIG-* 矩阵。报告保存了 43 项
+单节点断言和 13 项双节点断言的通过记录，以及后续 CLI 检查与测试统计。</p>
+<h2 id="每次变更怎么检查">每次变更怎么检查</h2>
+<p>先核对实现与已公布契约，再检查教程是否说明了该行为的原因和实现步骤。重点包括：
+身份/版本与 CAS；List/Watch 的连接与退出；控制器重复协调；资源请求与运行时限制；
+镜像缓存与拉取失败；网络地址复用、跨节点路由、VIP 分配者；删除后的实际资源回收。</p>
+<p>实现中的私有日志编码、包结构和工具选择可以有不同方案。课程必需机制在正文解释，
+参考实现细节放在契约或实现说明中。每个实验应给出输入、命令、预期断言及失败现场，
+并指向实际记录。发现教程缺口时补足说明；行为变化时重跑相关实验后更新结果。</p>
+<h2 id="本阶段检查方法">本阶段检查方法</h2>
+<p><span class="local-artifact" title="本地工程附件：tutorial/course.json">course.json（本地工程附件）</span> 按模块登记原文/订正、公共契约及十项教学要求所在的章节。
+九个模块章共 90 个要求位置，00/10 与实验页补充环境及完整操作。映射由本轮逐章核对，
+脚本检查章节与证据位置是否仍然有效：</p>
+<pre><code class="language-bash">python3 tutorial/check_course.py --output /tmp/opencode/course-review-new.json
+</code></pre>
+<p>脚本还检查本地链接、示例 JSON、全部 56 项原生运行断言的教材归属，以及第二阶段快照中
+93 份实现/测试/脚本的 SHA-256。新增 Core 实验的实际执行和四份示例 API 响应保存在
+<span class="local-artifact" title="本地工程附件：docs/progress/evidence/stage3-20261107/core/summary.json">第三阶段证据（本地工程附件）</span>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查层次</th>
+<th>本次依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正文与实现对应</td>
+<td>逐章读契约/源码并补充计算、状态、并发与恢复步骤</td>
+</tr>
+<tr>
+<td>新增命令与对象</td>
+<td>真实 API 的 CRUD/PATCH/Watch、四份示例 POST/GET/DELETE</td>
+</tr>
+<tr>
+<td>节点/网络行为</td>
+<td>第二阶段 43+13 项 KVM 断言；本次实现文件哈希一致</td>
+</tr>
+<tr>
+<td>课程交付检查</td>
+<td>章节要求索引、链接、JSON、Bash 语法与实验 ID</td>
+</tr>
+</tbody>
+</table></div>
+<p>故障和异常用例是否已运行按对应报告列出。私有日志编码、工具参数与加固选择分别在契约
+或环境页说明。第四阶段继续扩充可供其他实现使用的黑盒检查，当前入口见 grader/README。</p>
+<p>课程维护者还可验证已发布的请求构造与实验入口：</p>
+<pre><code class="language-bash">python3 tutorial/labs/verify-material.py --api-binary "$COURSE_BIN/mini-apiserver" \
+  --output /tmp/opencode/course-material-new
+</code></pre>
+<p>COURSE_BIN 按 Core 实验构建，运行此检查前保留该二进制。检查实际执行滚动 PATCH 与
+退出/init/只读卷的 jq 请求构造，提交给独立 API；还验证已有 API 接入模式保留进程，
+启动失败被拒绝且临时 WAL 清理。容器内行为对应第 06 章既有 KVM 记录。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.9：恢复镜像拉取失败 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-69恢复镜像拉取失败">Stage 6.9：恢复镜像拉取失败</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在 registry 暂时失败后继续重试同一个 Pod。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本阶段实现 kubelet，也就是在一个节点上负责运行 Pod 的组件。Pod 是对“运行哪些容器”的描述：
+<code>spec</code> 保存期望配置，<code>status</code> 保存观察结果。kubelet 读取分配给本节点的 Pod，调用前两节的
+运行时接口，再把结果写回 API。</p>
+<p>测试器调用 <code>./test-hooks/start node /tmp/course-run/work/lifecycle</code>，由你的脚本启动 API 和
+kubelet。随后它创建已经填写 <code>spec.nodeName</code> 的 Pod，并等待结果。这里使用节点网络，Pod 网络
+在第九小节实现。本节在实验 KVM 内运行，测试程序和镜像由实验环境准备。</p>
+<h2 id="错误发生在应用启动之前">错误发生在应用启动之前</h2>
+<p>测试环境有一个本地镜像仓库。测试器先让它返回 HTTP 503，再创建引用本轮新镜像 tag 的 Pod。
+这个引用尚未缓存，kubelet 的镜像拉取会失败。</p>
+<p>测试等待 Pod.status.reason=RuntimeError，然后恢复仓库。它继续查询同一个 Pod，要求最终
+进入 Running；测试器在中间不会重新创建这个 Pod。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>把拉取失败写成可观察状态，保留这份期望 Pod，在后续调谐中重试。恢复后接着完成创建流程。
+镜像 tag、完整引用和错误信息都应来自当前任务，便于定位拉取问题。</p>
+<p><a href="../stages/06-kubelet.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>NODE-PULL</code>：registry 恢复后，同一 Pod 进入 Running。</p>
+<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 6.9
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

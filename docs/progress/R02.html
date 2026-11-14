@@ -1,0 +1,41 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>R02：Deployment 与 Endpoints 已通过真实容器验收 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="r02deployment-与-endpoints-已通过真实容器验收">R02：Deployment 与 Endpoints 已通过真实容器验收</h1>
+<p>范围：原文 §13.4–13.5、DEPLOY-002、EPS-001/002；遵循 <code>docs/MVP-SCOPE.md</code>。
+本轮由主 agent 执行，未调用 subagent。</p>
+<p>已实现基础 RollingUpdate、template hash/owner UID、按申请量与就绪预算扩缩 RS，
+以及 Service/Pod 事件驱动的 Endpoints、命名端口解析、无变化抑制与删除清理。
+未加入暂停、回滚、进度期限、EndpointSlice 或 HA。</p>
+<p>教学章节：<a href="../../tutorial/08-deployment-endpoints.html">08-deployment-endpoints.md</a>。
+接口契约：<a href="../contracts/deployment-endpoints.html">deployment-endpoints.md</a>。
+教学独立复现待验收；参考实现已通过 HTTP 和真实容器检查。</p>
+<h2 id="原文补充订正">原文补充订正</h2>
+<ul>
+<li>§13.4 把 UpdatedReplicas 赋成新 RS ReadyReplicas，混合了新版本数量与就绪数量。
+  实验输入为新 RS replicas=1、ready=0：Updated=1，Ready 仍由旧版提供。
+  依据：固定版本 apps/v1 DeploymentStatus；<code>TestRolloutWaitsForReadyAndMaintainsBudgets</code>。</li>
+<li>maxSurge=0 时，原文先等新版本 Ready 的门槛会阻止第一步；在 maxUnavailable 允许时，
+  先减少旧版，再增加新版即可取得进展。<code>TestRolloutZeroSurgeUsesUnavailableBudget</code> 验证。</li>
+<li>旧版未就绪副本不占用就绪预算，可回收以给新版腾出容量；已有就绪副本继续按预算保护。</li>
+<li>原文 computeMax* 未展开。本 MVP 公布整数/百分比取整及 422 约束，见教程。
+  Kubernetes 的百分比归零回退策略与本 MVP 的拒绝策略分别说明。</li>
+</ul>
+<p>固定版本依据保存在 <code>evidence/r02-20261106/sources/</code>，来源为
+https://github.com/kubernetes/api/blob/v0.29.0/apps/v1/types.go 和
+https://github.com/kubernetes/kubernetes/blob/v1.29.0/pkg/controller/deployment/util/deployment_util.go 。
+第一阶段审计文件与发布包保持原样，以上为实践阶段新增订正。</p>
+<h2 id="验证">验证</h2>
+<ul>
+<li>controller/API 相关竞态测试通过；十轮重复竞态测试通过。</li>
+<li>R01 测试客户端曾在并发 status 写入期间遇到正常 409。缩容测试改为重新 GET 后重试，
+  与公开 CAS 契约一致；没有跳过测试。失败记录见本次工具执行记录。</li>
+<li>从全新 KVM 构建并执行四进程验收，N01/R01/R02 共 25 项断言全部通过。</li>
+<li>R02 真实结果：两个 v1 Running；EndPoints 将命名端口解析为 8080；更新为 v2 后，
+  记录中 RS 申请数最多 3、就绪数最低 2；新容器 CRI 环境变量为 v2，Pod UID 全部替换；
+  Endpoints 引用新版 UID；删除 Service 后 Endpoints 404；删除 Deployment 后 RS/Pod 为零。</li>
+<li>guest 容器/sandbox 已全部清理，两台临时 KVM 停止，overlay、seed 和 SSH key 目录删除。</li>
+</ul>
+<p>日志：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/r02-20261106/fresh-vm/acceptance.log">fresh-vm/acceptance.log（本地工程附件）</span>。
+断言：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/r02-20261106/fresh-vm/guest/summary.json">guest/summary.json（本地工程附件）</span>。
+滚动轨迹：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/r02-20261106/fresh-vm/guest/rollout-trace.json">rollout-trace.json（本地工程附件）</span>。
+销毁记录：<span class="local-artifact" title="本地工程附件：docs/progress/evidence/r02-20261106/fresh-vm/vm-delete.json">vm-delete.json（本地工程附件）</span>。</p>
+<p>该检查点的 Endpoints 验收覆盖后端对象；后续实际 Service 数据转发和完整集成已在
+<a href="P01-I01.html">P01/I01</a> 验收。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

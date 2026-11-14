@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 5.2：标记初始同步结束 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-52标记初始同步结束">Stage 5.2：标记初始同步结束</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在初始对象之后发送 BOOKMARK。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本阶段继续运行 API 服务。测试器用 HTTP 建立 Watch 长连接，再从另一个连接创建或删除对象。
+Watch 表示持续订阅对象变化；返回格式是 NDJSON，即每行一个 JSON 事件。</p>
+<p>本页 URL 使用 <code>demo</code> 作为 namespace 示例。一个事件中的 <code>type</code> 表示变化类型，<code>object</code> 是对应
+对象。<code>resourceVersion</code> 是对象或快照的存储版本，用于说明从哪里接收后续变化。
+API 的启动和停止仍使用 <code>--adapter</code> 指定的脚本目录。</p>
+<h2 id="怎样知道初始对象已经发完">怎样知道初始对象已经发完</h2>
+<p>继续处理缺省版本的 Watch。本阶段要求先发送已有 Pod 的 ADDED，再发送 BOOKMARK，例如：</p>
+<pre><code class="language-json">{"type":"BOOKMARK","object":{"metadata":{"resourceVersion":"10"}}}
+</code></pre>
+<p>BOOKMARK 是一个进度标记，表示版本 10 的初始快照已经完成。它不表示新增了一个 Pod。
+测试器要求其版本为正数，并确认它位于 ADDED 之后。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>在一次受保护的读取中取对象集合和快照版本。先发送集合，再发同一快照位置的 BOOKMARK，
+然后接续这个位置之后的变化，防止初始化和实时流之间出现空隙。</p>
+<p><a href="../stages/05-watch.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>WATCH-BOOKMARK</code>：ADDED 位于 BOOKMARK 之前，bookmark 携带快照位置。</p>
+<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 5.2
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

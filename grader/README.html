@@ -1,0 +1,100 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MiniK8s 分阶段测试器 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="minik8s-分阶段测试器">MiniK8s 分阶段测试器</h1>
+<p>按原教程组织为十个小节、70 个小 stage，每次提交验收一项能力。先阅读 <a href="docs/FIRST-SUBMISSION.html">从空 main 到第一次提交</a>，再按 <a href="content/README.html">课程目录</a> 编写各阶段。<code>test.sh</code> 使用 Bash、curl、jq 和普通 Linux 工具，
+通过公开适配器、HTTP、CNI 和实际运行结果检查；失败时留下请求、响应、日志与资源现场。</p>
+<p>启动本地课程界面：</p>
+<pre><code class="language-bash">minik8s serve
+</code></pre>
+<p>浏览器访问 http://127.0.0.1:7331。页面提供阶段说明、提示、配置、提交与测试结果，
+使用同一份项目进度。首次安装与环境要求见 <a href="docs/LOCAL-UI.html">本地界面说明</a>。</p>
+<p>日常使用入口为 <code>minik8s submit</code>：通过当前小 stage 后保存进度，下次测试下一项。
+先在测试器所在目录安装命令，再进入自己的实现目录：</p>
+<pre><code class="language-bash">bash grader/install.sh
+cd /path/to/my-minik8s
+minik8s init --driver ./bin/my-minik8s --fixture ./lab --vm-id "$vm_uuid"
+minik8s stage
+minik8s submit
+minik8s submit --all
+</code></pre>
+<p>上例用于第一小节，<code>vm_uuid</code> 取自实验 VM 的创建记录；<code>--driver</code> 指向你编译的程序，<code>--fixture</code> 指向测试文件目录。第四小节开始再配置启动脚本目录 <code>--adapter</code>。目录准备见上面的首次提交说明。</p>
+<p>进度保存在项目的 <code>.minik8s/</code>；失败保留当前阶段。<code>minik8s status</code> 查看进度，
+<code>minik8s report</code> 阅读最近结果。完整配置、KVM 依赖和前端接口见
+<a href="docs/COURSE-CLI.html">逐阶段提交</a>。新入口另需 Python 3，使用标准库。</p>
+<p>下方 <code>test.sh</code> 是底层测试入口，适合单项调试或外部集成。</p>
+<p>先查看小节与细分 stage：</p>
+<pre><code class="language-bash">minik8s stages
+</code></pre>
+<p>底层综合回归的小节清单仍可用 <code>bash grader/test.sh --list</code> 查看。</p>
+<p><a href="docs/STAGES.html">STAGES.md</a> 按原教程 §6–15 说明每个 ID 的测试方式与预期。
+<a href="docs/ADAPTER.html">ADAPTER.md</a> 说明怎样接自己的启动脚本、KV/运行时包装器和 CNI。</p>
+<h2 id="运行一个-stage">运行一个 stage</h2>
+<p>以只启动 API 的 stage 4 为例：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage 4 --adapter /path/to/my-minik8s/grader-adapter \
+  --url http://127.0.0.1:18881 --output /tmp/my-minik8s-stage4
+</code></pre>
+<p>每次使用新 output 目录。修复失败后，单独重跑某个检查：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage 4 --only API-PATCH \
+  --adapter /path/to/my-minik8s/grader-adapter \
+  --url http://127.0.0.1:18881 --output /tmp/my-minik8s-patch-again
+</code></pre>
+<p>KV 阶段只需要你的 JSONL 包装器：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage 3 --driver /path/to/my-kv-driver \
+  --output /tmp/my-minik8s-stage3
+</code></pre>
+<p>底层综合 stage 的 summary.json 有 pass=true、stage_complete=true。--only 记录原综合检查的单项结果，
+stage_complete=false。退出码非零表示失败，failed_test 给出测试 ID；cleanup=false 表示
+退出清理没有确认。控制器的对象观察测试与真实容器测试分别放在 stage 8 和 stage 10。</p>
+<p>需要 Bash、curl、jq、timeout。阶段 3/4/5/7/8 可在普通用户环境运行；1/2/6/9/10 需要获批
+可销毁 KVM，增加 --vm-id。运行时包装、静态 fixture 与镜像由实验环境提供。不要将特权
+命令放到宿主机执行。</p>
+<h2 id="完整运行与参考环境">完整运行与参考环境</h2>
+<p>在准备好的 guest 中，课程入口 <code>minik8s submit --all</code> 顺序执行 70 个细分 stage。
+底层 <code>test.sh --stage all</code> 保留十小节的原 44 项综合回归，遇到首个失败停止。
+完整命令如下，路径指向你的实现和提供的测试依赖：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage all --adapter /path/to/my-adapter \
+  --driver /path/to/my-driver --cni /path/to/my-cni --fixture /path/to/test-fixture \
+  --url "$API" --vm-id "$VM_UUID" --output /tmp/my-minik8s-all
+</code></pre>
+<p>镜像拉取用每轮独立 tag，可以在同一实验 VM 重跑。其他参数含义见接口说明。
+MINIK8S_STAGE_TIMEOUT 设置轮询/驱动等待期限，默认 30 秒。环境性能不同可适当增加。</p>
+<p>参考实现及完整 VM 准备可从仓库根目录复验：先按
+<a href="../docs/VM-EXPERIMENTS.html">VM 文档</a> 下载和校验 LAB/IMAGE_SHA512/CRI_SHA256，再运行：</p>
+<pre><code class="language-bash">python3 reference/tests/vm/run.py \
+  --image "$LAB/base.qcow2" --sha512 "$IMAGE_SHA512" \
+  --crictl "$LAB/crictl.tar.gz" --crictl-sha256 "$CRI_SHA256" \
+  --staged-grader --output /tmp/minik8s-stages-vm
+</code></pre>
+<p>它构建参考组件和适配器、创建并核对 KVM、准备 CRI/CNI/镜像，执行各阶段与故意错误的
+CNI 检查，保存结果后停止并删除 VM 磁盘/seed/key。自己的实现可用同一环境，换成自己的
+adapter；测试代码不需要修改。环境配置与测试依赖见 ADAPTER.md。</p>
+<h2 id="测试器自身检查">测试器自身检查</h2>
+<pre><code class="language-bash">python3 grader/verify-stages.py --output /tmp/minik8s-grader-selfcheck
+</code></pre>
+<p>它在普通用户环境构建临时参考组件，将 grader 复制到另一个目录执行阶段 3/4/5/7/8，
+再用两个故意错误的 JSONL 转发器检查旧 CAS 被接受、删除事件丢值是否被检出。
+KVM 流程另验证“CHECK 总返回成功”的错误插件。每个失败样本都有预期 ID 和清理结果，
+不会计入参考实现的正例通过数。旧版 HTTP 故障与清理自检仍可用 <code>python3 grader/verify.py</code>。</p>
+<h2 id="双节点">双节点</h2>
+<p>原文 §14.4 的静态路由实验作为 stage 9/10 的补充，用已有独立接口：</p>
+<pre><code class="language-bash"># 在两节点环境的获批 guest 内，API 和 VM_UUID 指向本次环境
+bash grader/grade.sh --case cross-node --url "$API" --vm-id "$VM_UUID" \
+  --output /tmp/minik8s-cross-node
+</code></pre>
+<p>测试两个 Ready 节点上的双向 PodIP，以及两侧 Pod 经 VIP 访问两个后端。环境自动准备可用
+<code>reference/tests/vm/run.py --two-node</code>，此前结果保存在第二阶段报告。</p>
+<p>原有 <code>grade.sh --case api|patch|watch|pod|rs|deployment|service|cross-node|all</code> 继续可用，
+生命周期 COMPONENT=apiserver/all 的旧协议保留；分 stage 新增接口见 ADAPTER.md。
+当前交付与实际结果见 <a href="../docs/progress/STAGE4.html">第四阶段记录</a>。</p>
+<h2 id="独立交付包">独立交付包</h2>
+<p>下载 <code>dist/minik8s-grader.tar.gz</code> 及其 <code>.sha256</code> 文件，在同一目录校验并解压：</p>
+<pre><code class="language-bash">sha256sum -c minik8s-grader.tar.gz.sha256
+tar -xzf minik8s-grader.tar.gz
+bash grader/test.sh --list
+</code></pre>
+<p>包内含运行脚本、接口说明和测试夹具源码。按 ADAPTER.md 接入自己的实现即可运行；
+<code>verify-stages.py</code>、<code>verify.py</code> 是维护者自检，使用完整仓库中的参考实现。
+在完整仓库内执行 <code>python3 grader/package.py</code> 可重新生成交付包。</p>
+<p>课程命令的回归检查：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s grader/tests -v
+python3 grader/verify-course.py --output /tmp/minik8s-course-check-new
+</code></pre>
+<p>前者检查进度与事件行为；后者通过外部适配器运行真实 KV/API/Watch，实现跨进程连续提交。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

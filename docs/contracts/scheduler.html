@@ -1,0 +1,46 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>S01：单进程调度器 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="s01单进程调度器">S01：单进程调度器</h1>
+<p><code>mini-scheduler --server http://127.0.0.1:8080</code> 作为独立进程运行，经 HTTP 为未绑定且
+未终止的 Pod 选择 Node，并写 <code>/binding</code>。SIGINT/SIGTERM 取消请求、停止两个 Informer
+并等待退出。当前支持一个 scheduler 进程和一个调度 worker。</p>
+<h2 id="调度步骤">调度步骤</h2>
+<ol>
+<li>Pod 与 Node Informer 都完成首次同步后开始处理任务。Pod/Node 变化会重新入队等待 Pod。</li>
+<li>GET 目标 Pod；已删除、已绑定、Succeeded 或 Failed 返回成功。</li>
+<li>List 全部 Pod 和 Node，从已绑定且未终止的 Pod 重建资源用量。</li>
+<li>筛选 Ready=True、未设 Unschedulable 且 CPU/Memory Allocatable 都大于零的 Node。</li>
+<li>计算 <code>剩余 = allocatable - 已用</code>，两种资源都能满足才进入候选。</li>
+<li>按原文计算 CPU/memory 已用百分比，再取 score=(200-cpuUtil-memUtil)/2；
+   最高分优先，同分按名称升序。比例乘法使用宽乘法避免 int64 溢出。</li>
+<li>使用目标 Pod 的 UID/RV 条件绑定。失败按队列退避重试；资源不足也保留等待任务。</li>
+</ol>
+<p>CPU 单位为毫核，memory 为字节。应用容器求和，init container 按每项资源取最大值，
+Pod 请求为应用总和与 init 峰值的较大值。加法饱和到 int64 上限，避免溢出产生虚假空闲。
+此模型的 init container 顺序运行，未定义可持续运行的 sidecar init。</p>
+<h2 id="绑定与恢复">绑定与恢复</h2>
+<p><code>client.BindPodObject(ctx, pod, nodeName)</code> 携带 Pod UID 和 resourceVersion。
+<code>/binding</code> 在写入前检查两个条件，保护同名重建及资源请求修改；CAS 竞争时返回 409，
+调用方重新 GET。无 UID/RV 的 <code>BindPod</code> 保留原有的同目标幂等行为。</p>
+<p>本实现采用单 worker 串行绑定，每次决策都读取 API 的已绑定 Pod。已确认绑定会出现在
+下一轮 List 中，调度不依赖 Informer 的投递时延。请求发生超时或响应丢失后，下一次 GET
+检查绑定结果；服务端已提交的分配仍占用资源。重启使用相同流程恢复用量。</p>
+<p>这实现了原架构中建账、预留与失败恢复的目标。原先计划的本地 Assume 账本改为每轮从 API
+重建，以减少账本与缓存的同步状态；代价是每次决策增加两次 List。多 scheduler、跨资源事务、
+抢占、亲和性、污点容忍和心跳过期判断尚未实现。Ready 由 Node status 的报告方负责；
+Node 删除、容量修改和绑定之间存在快照时差。手工设置 nodeName 的请求由提交方负责资源约束。</p>
+<h2 id="验证与运行">验证与运行</h2>
+<pre><code class="language-bash">cd reference
+go build -buildvcs=false -o /tmp/mini-apiserver ./cmd/mini-apiserver
+go build -buildvcs=false -o /tmp/mini-scheduler ./cmd/mini-scheduler
+# 在两个终端分别运行，数据目录由调用方选择。
+/tmp/mini-apiserver --listen 127.0.0.1:8080 --data /tmp/mini-api.wal
+/tmp/mini-scheduler --server http://127.0.0.1:8080
+</code></pre>
+<p>Node 注册与心跳由 kubelet 提供。单独验证 scheduler 时可通过 API 创建 Node，并设置
+<code>status.allocatable</code> 和 <code>status.conditions=[{"type":"Ready","status":"True"}]</code>。
+scheduler 负责绑定；容器启动与状态由 kubelet/runtime 负责。双节点结果见 <code>docs/progress/ALIGNMENT.md</code>。</p>
+<pre><code class="language-bash">go test -race -count=1 -timeout=60s ./internal/scheduler ./cmd/mini-scheduler
+python3 scripts/verify-s01.py --output /tmp/opencode/s01-fresh-output
+</code></pre>
+<p>进程验收自动构建两个二进制，经真实 HTTP 验证 Ready 拒绝、容量约束、删除释放、scheduler
+重启后建账与退出，结束时清理临时二进制、WAL 和进程，保留日志及 summary。输出目录须为新目录。
+额外 HTTP 测试覆盖 init 峰值、批量 Pod、完成释放、条件绑定和已提交但丢失响应的恢复。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,1051 @@
+{
+  "source_commit": "506abffc121e7ad98cdc8f310a9f0a8db69d0843",
+  "source_sha256": "12351d79434b719bd44cecedf2cbf53b898847c7d5d74226a7466676a7228f3d",
+  "corrected_sha256": "e6f79d495fb74e5f7aa9f7b803704a36044160cbed4717c300ccef69450e261f",
+  "changes": [
+    {
+      "ids": [
+        "XC-001"
+      ],
+      "before": "Kubernetes is **etcd plus N controllers that watch etcd**.",
+      "after": "Kubernetes is **etcd behind an API server, plus controllers that watch the API**."
+    },
+    {
+      "ids": [
+        "WATCH-005"
+      ],
+      "before": "Stream changes back to clients as an HTTP/2 event feed",
+      "after": "Stream changes back to clients as an HTTP event feed"
+    },
+    {
+      "ids": [
+        "XC-003"
+      ],
+      "before": "a scheduler that watches unbound Pods and patches `spec.nodeName`",
+      "after": "a scheduler that watches unbound Pods and binds them through the API"
+    },
+    {
+      "ids": [
+        "DOC-003",
+        "XC-001"
+      ],
+      "before": "Eight binaries, four shared libraries, one runtime dependency.",
+      "after": "The components include executables, shared libraries, and an external runtime dependency. `minikv` is linked into `mini-apiserver`; the informer and workqueue are libraries."
+    },
+    {
+      "ids": [
+        "RUNTIME-005",
+        "CGROUP-002"
+      ],
+      "before": "   4.  fork() (or clone3 with CLONE_INTO_CGROUP for atomicity)\n   5.  In child:\n          unshare(CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWNS |\n                  CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWCGROUP)\n          (skip CLONE_NEWUSER for simplicity; can add later)\n   6.     fork() again — required so that PID 1 inside is the new process\n          (the first fork's child is still in the old PID ns view of init)",
+      "after": "   4.  clone3 with the namespace flags and CLONE_INTO_CGROUP\n   5.  The child already has new PID, network, mount, UTS, IPC and cgroup namespaces\n          (skip CLONE_NEWUSER for simplicity; can add later)\n   6.     The clone child is PID 1 in its new PID namespace\n          (unshare(CLONE_NEWPID), unlike clone, would require a later child)"
+    },
+    {
+      "ids": [
+        "CGROUP-001",
+        "CGROUP-003"
+      ],
+      "before": "    Rootfs     string            // path to pre-extracted image filesystem",
+      "after": "    Rootfs     string            // path to pre-extracted image filesystem\n    CgroupParent string           // empty, delegated cgroup v2 parent in this VM"
+    },
+    {
+      "ids": [
+        "CGROUP-001"
+      ],
+      "before": "    cgroupPath := fmt.Sprintf(\"/sys/fs/cgroup/minik8s/%s/%s\", spec.PodID, spec.ID)\n    must(os.MkdirAll(cgroupPath, 0755))",
+      "after": "    // The lab supplies an empty delegated parent with cpu/memory/pids available.\n    // Enable each controller in the parent before creating/configuring its children.\n    enableControllers(spec.CgroupParent, \"cpu\", \"memory\", \"pids\")\n    podCgroup := filepath.Join(spec.CgroupParent, spec.PodID)\n    must(os.MkdirAll(podCgroup, 0755))\n    enableControllers(podCgroup, \"cpu\", \"memory\", \"pids\")\n    cgroupPath := filepath.Join(podCgroup, spec.ID)\n    must(os.MkdirAll(cgroupPath, 0755))"
+    },
+    {
+      "ids": [
+        "CGROUP-001",
+        "CGROUP-002"
+      ],
+      "before": "    // Enable the controllers in the parent before any task is moved.\n    writeFile(\"/sys/fs/cgroup/minik8s/cgroup.subtree_control\", \"+cpu +memory +pids +io\")",
+      "after": "    cgroupFD, err := os.Open(cgroupPath)\n    must(err)\n    defer cgroupFD.Close()"
+    },
+    {
+      "ids": [
+        "CGROUP-002"
+      ],
+      "before": "        // No user ns for simplicity.\n    }\n    must(cmd.Start())\n\n    // After Start: pin pid to cgroup if not using CLONE_INTO_CGROUP.\n    writeFile(cgroupPath+\"/cgroup.procs\", fmt.Sprintf(\"%d\", cmd.Process.Pid))",
+      "after": "        // Linux clone3 places the child in the cgroup before it can run.\n        UseCgroupFD: true,\n        CgroupFD: int(cgroupFD.Fd()),\n        // No user ns for simplicity.\n    }\n    must(cmd.Start())"
+    },
+    {
+      "ids": [
+        "RUNTIME-005"
+      ],
+      "before": "    // STEP 6: a second fork so we become PID 1 in the new ns\n    //         (the unshare's child is still PID 1 from its parent's PoV).\n    //         Skipped in this snippet for brevity; assume the re-exec already did it.",
+      "after": "    // Cloneflags created this child's PID namespace; it is already PID 1.\n    // A separate unshare(CLONE_NEWPID) would instead affect subsequent children."
+    },
+    {
+      "ids": [
+        "RUNTIME-004"
+      ],
+      "before": "    // Bind the rootfs onto itself so it's a mountpoint.\n    must(syscall.Mount(spec.Rootfs, spec.Rootfs, \"\", syscall.MS_BIND|syscall.MS_REC, \"\"))",
+      "after": "    // Bind the rootfs onto itself so it's a mountpoint.\n    must(syscall.Mount(spec.Rootfs, spec.Rootfs, \"\", syscall.MS_BIND|syscall.MS_REC, \"\"))\n    devRoot := filepath.Join(spec.Rootfs, \"dev\")\n    must(os.MkdirAll(devRoot, 0755))\n    must(syscall.Mount(\"tmpfs\", devRoot, \"tmpfs\", syscall.MS_NOSUID, \"mode=755,size=65536k\"))\n    for _, dev := range []string{\"null\", \"zero\", \"urandom\", \"random\", \"tty\"} {\n        dst := filepath.Join(devRoot, dev)\n        f, err := os.Create(dst); must(err); must(f.Close())\n        must(syscall.Mount(\"/dev/\"+dev, dst, \"\", syscall.MS_BIND, \"\"))\n    }"
+    },
+    {
+      "ids": [
+        "RUNTIME-004"
+      ],
+      "before": "    must(syscall.Mount(\"tmpfs\", \"/dev\", \"tmpfs\",\n        syscall.MS_NOSUID, \"mode=755,size=65536k\"))\n    // Recreate /dev/null, /dev/zero, /dev/urandom by bind-mounting from host.\n    for _, dev := range []string{\"null\", \"zero\", \"urandom\", \"random\", \"tty\"} {\n        path := \"/dev/\"+dev\n        f, _ := os.Create(path); f.Close()\n        must(syscall.Mount(\"/host/dev/\"+dev, path, \"\", syscall.MS_BIND, \"\"))\n    }\n\n",
+      "after": "    // /dev was prepared before pivot_root, while the source devices were reachable.\n\n"
+    },
+    {
+      "ids": [
+        "CGROUP-001",
+        "RUNTIME-004"
+      ],
+      "before": "    \"io/ioutil\"\n)",
+      "after": "    \"io/ioutil\"\n    \"path/filepath\"\n)"
+    },
+    {
+      "ids": [
+        "CGROUP-001",
+        "CGROUP-002",
+        "RUNTIME-001"
+      ],
+      "before": "### 6.3 What This Maps To",
+      "after": "`enableControllers` reads the parent's `cgroup.controllers`, checks that the requested controllers\nare available, then writes their `+name` entries to `cgroup.subtree_control`. The delegated parent\nand intermediate cgroups contain no processes. Keep PID 1 alive to reap children and forward signals;\ncollect its exit status with `Wait`. All namespace, mount and cgroup experiments run inside the\napproved disposable VM; [the existing kernel/runtime experiments](../docs/VM-EXPERIMENTS.md) supply\nthat environment.\n\n### 6.3 What This Maps To"
+    },
+    {
+      "ids": [
+        "PROTO-001"
+      ],
+      "before": "### 7.1 The Eight-Method CRI",
+      "after": "### 7.1 The Minimal CRI"
+    },
+    {
+      "ids": [
+        "PROTO-001"
+      ],
+      "before": "Real CRI has ~30 RPC methods. Our minimal cut is 8.",
+      "after": "The sketch below lists eleven runtime methods and three image methods."
+    },
+    {
+      "ids": [
+        "PROTO-003"
+      ],
+      "before": "    bool share_net = 3; // usually true; false only for hostNetwork",
+      "after": "    bool share_net = 3; // application containers join the sandbox network; hostNetwork uses NODE mode"
+    },
+    {
+      "ids": [
+        "RUNTIME-002",
+        "RUNTIME-003"
+      ],
+      "before": "1. **`RunPodSandbox`** — creates the pause container per phase 1 (just sleeps forever), saves `/proc/<pid>/ns/net` somewhere, returns the path.",
+      "after": "1. **`RunPodSandbox`** — creates the pause container per phase 1, pins its network namespace at a stable named path such as `/var/run/netns/cni-<id>`, and returns that path. A bind mount or an open namespace FD holds the namespace; copying the pathname alone does not. Release that handle after CNI DEL when removing the sandbox."
+    },
+    {
+      "ids": [
+        "RUNTIME-001"
+      ],
+      "before": "4. **`ContainerStatus`** — checks `/proc/<pid>/status`, examines the exit code if dead. This is the polled signal that PLEG (chapter 10) consumes.",
+      "after": "4. **`ContainerStatus`** — returns the state and exit status recorded by the runtime's `Wait`/`wait4` path. `/proc/<pid>/status` provides process information while the process exists; the parent collects the exit code and retains it for later status queries. This is the polled signal that PLEG (chapter 10) consumes."
+    },
+    {
+      "ids": [
+        "PROTO-001",
+        "PROTO-002",
+        "PROTO-003"
+      ],
+      "before": "### 7.2 The In-Memory State",
+      "after": "The proto is a service sketch: define the referenced request/response messages before generating\ncode. For example, `ContainerStatusResponse` contains a `ContainerStatus status` field. The complete\nCRI v1 messages can also be reused through containerd and crictl; [the runtime contract](../docs/contracts/kubelet-runtime.md)\nand [CRI experiment](labs/cri.md) show that path. In that path the runtime invokes CNI, so kubelet\nleaves network setup to CRI. With the custom runtime above, kubelet invokes CNI as shown in §11.\nFor host networking select `NODE`; the other mode joins a Pod sandbox network.\n\n### 7.2 The In-Memory State"
+    },
+    {
+      "ids": [
+        "KV-003",
+        "WATCH-001"
+      ],
+      "before": "    done     chan struct{}\n}",
+      "after": "    done     chan struct{}\n    errors   chan error\n    stopped  chan struct{}\n}"
+    },
+    {
+      "ids": [
+        "KV-007"
+      ],
+      "before": "ev := Event{Type: \"PUT\", Key: key, Value: value, Revision: rev, PrevRev: prevRev}",
+      "after": "ev := Event{Type: \"PUT\", Key: key, Value: append([]byte(nil), value...), Revision: rev, PrevRev: prevRev}"
+    },
+    {
+      "ids": [
+        "KV-005"
+      ],
+      "before": "ev := Event{Type: \"DELETE\", Key: key, Revision: rev, PrevRev: cur.modRevision}",
+      "after": "ev := Event{Type: \"DELETE\", Key: key, Value: append([]byte(nil), cur.value...), Revision: rev, PrevRev: cur.modRevision}"
+    },
+    {
+      "ids": [
+        "KV-001",
+        "KV-003",
+        "KV-004",
+        "KV-005",
+        "KV-007",
+        "WATCH-001",
+        "WATCH-006"
+      ],
+      "before": "// Watch subscribes to events on a prefix starting from startRev (exclusive).\n// If startRev <= compactRev, returns ErrCompacted (apiserver maps to HTTP 410).\nfunc (s *Store) Watch(prefix string, startRev int64) (<-chan Event, func(), error) {\n    s.mu.Lock()\n    if startRev > 0 && startRev <= s.compactRev {\n        s.mu.Unlock()\n        return nil, nil, ErrCompacted\n    }\n    sub := &subscriber{\n        prefix:   prefix,\n        startRev: startRev,\n        ch:       make(chan Event, 256),\n        done:     make(chan struct{}),\n    }\n    s.subscribers[sub] = struct{}{}\n\n    // Catchup: replay events from history that are > startRev and match prefix.\n    // (history is sorted by rev.)\n    for _, ev := range s.history {\n        if ev.Revision > startRev && strings.HasPrefix(ev.Key, prefix) {\n            // Non-blocking send is wrong here — we MUST deliver. If the buffer\n            // is full, we close the sub and force the client to reconnect with\n            // a fresh startRev (this is how watch backpressure works in etcd).\n            select {\n            case sub.ch <- ev:\n            default:\n                close(sub.ch)\n                delete(s.subscribers, sub)\n                s.mu.Unlock()\n                return nil, nil, ErrSlowConsumer\n            }\n        }\n    }\n    s.mu.Unlock()\n\n    // Background fan-out: a goroutine that listens on cond and forwards\n    // new events to this sub. Simplified single-goroutine version:\n    go s.subscriberLoop(sub)\n\n    cancel := func() {\n        s.mu.Lock()\n        defer s.mu.Unlock()\n        if _, ok := s.subscribers[sub]; ok {\n            delete(s.subscribers, sub)\n            close(sub.done)\n        }\n    }\n    return sub.ch, cancel, nil\n}\n\nfunc (s *Store) subscriberLoop(sub *subscriber) {\n    s.mu.Lock()\n    seen := s.currentRev\n    for {\n        // Wait until either a new event or cancellation.\n        for s.currentRev == seen {\n            select {\n            case <-sub.done:\n                s.mu.Unlock()\n                return\n            default:\n            }\n            s.cond.Wait()\n        }\n        // Drain history from seen+1 to currentRev.\n        for _, ev := range s.history {\n            if ev.Revision > seen && strings.HasPrefix(ev.Key, sub.prefix) {\n                select {\n                case sub.ch <- ev:\n                default:\n                    // Slow consumer: drop sub.\n                    delete(s.subscribers, sub)\n                    close(sub.ch)\n                    s.mu.Unlock()\n                    return\n                }\n            }\n        }\n        seen = s.currentRev\n    }\n}\n\n",
+      "after": "// Watch delivers revisions strictly after startRev. Zero replays retained history.\n// A separate error channel distinguishes compaction from a slow consumer.\nfunc (s *Store) Watch(prefix string, startRev int64) (<-chan Event, <-chan error, func(), error) {\n    s.mu.Lock()\n    if startRev < 0 || startRev > s.currentRev {\n        s.mu.Unlock()\n        return nil, nil, nil, ErrInvalidRevision\n    }\n    if startRev == 0 { startRev = s.compactRev }\n    if startRev < s.compactRev {\n        s.mu.Unlock()\n        return nil, nil, nil, ErrCompacted\n    }\n    sub := &subscriber{\n        prefix: prefix, startRev: startRev,\n        ch: make(chan Event, 256), done: make(chan struct{}),\n        errors: make(chan error, 1), stopped: make(chan struct{}),\n    }\n    s.subscribers[sub] = struct{}{}\n    // Copy the retained events and install the live cursor under the same lock.\n    for _, ev := range s.history {\n        if ev.Revision > startRev && strings.HasPrefix(ev.Key, prefix) {\n            select {\n            case sub.ch <- cloneEvent(ev):\n            default:\n                delete(s.subscribers, sub)\n                s.mu.Unlock()\n                return nil, nil, nil, ErrSlowConsumer\n            }\n        }\n    }\n    sub.startRev = s.currentRev\n    s.mu.Unlock()\n    go s.subscriberLoop(sub)\n    cancel := func() {\n        s.mu.Lock()\n        select {\n        case <-sub.done:\n        default: close(sub.done)\n        }\n        s.cond.Broadcast() // wake an idle subscriber, too\n        s.mu.Unlock()\n        <-sub.stopped\n    }\n    return sub.ch, sub.errors, cancel, nil\n}\n\nfunc cloneEvent(ev Event) Event {\n    ev.Value = append([]byte(nil), ev.Value...)\n    return ev\n}\n\nfunc (s *Store) subscriberLoop(sub *subscriber) {\n    s.mu.Lock()\n    defer func() {\n        delete(s.subscribers, sub)\n        close(sub.ch)\n        close(sub.errors)\n        s.mu.Unlock()\n        close(sub.stopped)\n    }()\n    seen := sub.startRev\n    for {\n        select { case <-sub.done: return; default: }\n        if seen < s.compactRev {\n            sub.errors <- ErrCompacted\n            return\n        }\n        for _, ev := range s.history {\n            if ev.Revision > seen && strings.HasPrefix(ev.Key, sub.prefix) {\n                select {\n                case sub.ch <- cloneEvent(ev):\n                default:\n                    sub.errors <- ErrSlowConsumer\n                    return\n                }\n            }\n        }\n        seen = s.currentRev\n        for s.currentRev == seen {\n            select { case <-sub.done: return; default: }\n            s.cond.Wait()\n        }\n    }\n}\n\n"
+    },
+    {
+      "ids": [
+        "KV-002",
+        "WATCH-002"
+      ],
+      "before": "    if rev > s.compactRev {\n        s.compactRev = rev\n        // Drop history entries <= rev.\n        cut := 0",
+      "after": "    if rev > s.currentRev { rev = s.currentRev }\n    if rev > s.compactRev {\n        s.compactRev = rev\n        // Drop history entries <= rev, including the entire history when appropriate.\n        cut := len(s.history)"
+    },
+    {
+      "ids": [
+        "KV-009",
+        "WATCH-002",
+        "KV-008",
+        "DOC-001"
+      ],
+      "before": "### 8.5 What This Maps To",
+      "after": "`trimHistory` applies the same compaction rule when the retention limit is exceeded: remove the\noldest entries and advance `compactRev` to the last removed revision. Keep the limit explicit\n(for example, an event count and a byte budget). `Range` returns both the copied entries and the\nglobal snapshot revision under its read lock; sort the entries by key when stable output is useful.\n\nFor restart recovery, append and sync a framed, checksummed write record before publishing its new\nmap state and revision. Replay complete records when opening; truncate an incomplete tail, report\ninterior corruption, and preserve confirmed writes. A failed write/sync requires rollback; if rollback\nfails, stop accepting writes until recovery. This is the persistence supplied by the reference\n[KV implementation and experiments](../docs/contracts/kv.md). It leaves the map/CAS/watch model above intact.\n\n### 8.5 What This Maps To"
+    },
+    {
+      "ids": [
+        "API-002"
+      ],
+      "before": "    json.NewDecoder(r.Body).Decode(incoming)\n    meta := incoming.GetObjectMeta()",
+      "after": "    if err := json.NewDecoder(r.Body).Decode(incoming); err != nil {\n        http.Error(w, \"bad body\", 400); return\n    }\n    meta := incoming.GetObjectMeta()"
+    },
+    {
+      "ids": [
+        "API-002"
+      ],
+      "before": "    rv, _ := strconv.ParseInt(meta.ResourceVersion, 10, 64)\n    // Defaulting + admission + validation as above.",
+      "after": "    rv, err := strconv.ParseInt(meta.ResourceVersion, 10, 64)\n    if err != nil || rv <= 0 { http.Error(w, \"invalid RV\", 422); return }\n    // Read the current object, validate URL name/namespace and immutable UID/time.\n    // Defaulting + admission + validation as above."
+    },
+    {
+      "ids": [
+        "API-002"
+      ],
+      "before": "    if err == kv.ErrPreconditionFailed {\n        http.Error(w, \"conflict\", 409); return\n    }\n    meta.ResourceVersion = fmt.Sprintf(\"%d\", rev)",
+      "after": "    if err == kv.ErrPreconditionFailed {\n        http.Error(w, \"conflict\", 409); return\n    } else if err != nil {\n        http.Error(w, \"internal\", 500); return\n    }\n    meta.ResourceVersion = fmt.Sprintf(\"%d\", rev)"
+    },
+    {
+      "ids": [
+        "API-001",
+        "API-006"
+      ],
+      "before": "That's about 150 lines covering five verbs. The remaining ~450 lines of `mini-apiserver` are:",
+      "after": "These two handlers illustrate create and update. GET, LIST, DELETE and PATCH still need handlers:\nGET projects the entry's revision into object RV; LIST projects each item RV and the Range snapshot\nRV into list metadata; neither read writes the object back. DELETE may use an RV precondition and\nreturns the previous object. The deletion event separately carries the deletion commit revision.\nFor PATCH, use object-form JSON Merge Patch with an explicit RV: recurse through objects, replace\narrays, delete fields set to null, then validate identity and commit with CAS. The\n[API contract](../docs/contracts/api.md) supplies routes, types, errors and examples.\n\nThe remaining pieces of `mini-apiserver` are:"
+    },
+    {
+      "ids": [
+        "API-005",
+        "KUBELET-006",
+        "XC-001",
+        "XC-002",
+        "XC-003",
+        "KV-006"
+      ],
+      "before": "### 9.3 The `resourceVersion` Contract",
+      "after": "The object interface needs metadata access and a deep-copy operation. Keep `/status` and\n`/binding` in the path parser: status writes replace only status after an RV check; unchanged status\nreturns without a new write. Binding uses POST, checks the Pod identity/version and target Node,\nthen CAS-updates nodeName; repeating the same assignment is idempotent, a different assignment conflicts.\nThese narrow writes preserve fields owned by other components. API Server owns the embedded KV;\nall other processes use HTTP.\n\n### 9.3 The `resourceVersion` Contract"
+    },
+    {
+      "ids": [
+        "KV-004",
+        "API-003",
+        "WATCH-006"
+      ],
+      "before": "3. **A watch with no RV** is \"start from now\" — only new events.",
+      "after": "3. **A watch with no RV** initializes from a current snapshot: send its objects as ADDED, then a BOOKMARK at the snapshot RV, then newer events. Retry the snapshot if compaction overtakes the Range-to-Watch interval."
+    },
+    {
+      "ids": [
+        "WATCH-005"
+      ],
+      "before": "Real Kubernetes uses HTTP/2 with a chunked JSON stream (one event per chunk). The body is:",
+      "after": "Kubernetes Watch sends a stream of JSON events. HTTP/1.1 may use chunked transfer encoding;\nHTTP/2 uses DATA frames. Read complete JSON events rather than relying on transport chunk boundaries.\nThe body is:"
+    },
+    {
+      "ids": [
+        "API-003",
+        "API-004",
+        "KV-004",
+        "KV-005",
+        "WATCH-001",
+        "WATCH-003",
+        "WATCH-004",
+        "WATCH-005",
+        "WATCH-006"
+      ],
+      "before": "func (s *APIServer) handleWatch(w http.ResponseWriter, r *http.Request, info *ResourceInfo, ns string) {\n    rvStr := r.URL.Query().Get(\"resourceVersion\")\n    startRev, _ := strconv.ParseInt(rvStr, 10, 64)\n    prefix := storagePrefix(info, ns)\n\n    flusher, ok := w.(http.Flusher)\n    if !ok { http.Error(w, \"no streaming\", 500); return }\n\n    ch, cancel, err := s.kv.Watch(prefix, startRev)\n    if err == kv.ErrCompacted {\n        // Emit a single ERROR event, then close.\n        w.Header().Set(\"Content-Type\", \"application/json\")\n        w.WriteHeader(200)\n        emitErr(w, 410, \"Gone\", \"the resourceVersion is too old\")\n        flusher.Flush()\n        return\n    } else if err != nil {\n        http.Error(w, err.Error(), 500); return\n    }\n    defer cancel()\n\n    w.Header().Set(\"Content-Type\", \"application/json\")\n    w.Header().Set(\"Transfer-Encoding\", \"chunked\")\n    w.WriteHeader(200)\n\n    ticker := time.NewTicker(30 * time.Second) // bookmark interval\n    defer ticker.Stop()\n\n    for {\n        select {\n        case <-r.Context().Done():\n            return\n        case <-ticker.C:\n            // Send a BOOKMARK event — tells client the latest RV they're synced to.\n            emitBookmark(w, s.kv.CurrentRev())\n            flusher.Flush()\n        case ev, ok := <-ch:\n            if !ok {\n                // Slow consumer or store closed — emit 410 and bail.\n                emitErr(w, 410, \"Gone\", \"watch closed: slow consumer or compaction\")\n                flusher.Flush()\n                return\n            }\n            obj := info.Prototype()\n            if ev.Type == \"PUT\" || ev.Type == \"DELETE\" {\n                if ev.Type == \"DELETE\" {\n                    // For DELETE we need the prior value — could maintain a side\n                    // map of pre-delete snapshots. For brevity, emit minimal.\n                    json.Unmarshal(ev.Value, obj) // may be empty\n                } else {\n                    json.Unmarshal(ev.Value, obj)\n                }\n                obj.GetObjectMeta().ResourceVersion = fmt.Sprintf(\"%d\", ev.Revision)\n            }\n            kind := map[string]string{\"PUT\": \"MODIFIED\", \"DELETE\": \"DELETED\"}[ev.Type]\n            if ev.PrevRev == 0 && ev.Type == \"PUT\" {\n                kind = \"ADDED\"\n            }\n            emitEvent(w, kind, obj)\n            flusher.Flush()\n        }\n    }\n}\n```\n\n",
+      "after": "func (s *APIServer) handleWatch(w http.ResponseWriter, r *http.Request, info *ResourceInfo, ns string) {\n    prefix := storagePrefix(info, ns)\n    query := r.URL.Query()\n    initial := !query.Has(\"resourceVersion\")\n    startRev := int64(0)\n    if !initial {\n        var err error\n        startRev, err = strconv.ParseInt(query.Get(\"resourceVersion\"), 10, 64)\n        if err != nil || startRev < 0 { http.Error(w, \"invalid RV\", 422); return }\n    }\n    flusher, ok := w.(http.Flusher)\n    if !ok { http.Error(w, \"no streaming\", 500); return }\n    var snapshot []kvPair\n    var ch <-chan kv.Event\n    var errs <-chan error\n    var cancel func()\n    for {\n        if r.Context().Err() != nil { return }\n        if initial { snapshot, startRev = s.kv.Range(prefix) }\n        var err error\n        ch, errs, cancel, err = s.kv.Watch(prefix, startRev)\n        if initial && err == kv.ErrCompacted { continue }\n        if err == kv.ErrCompacted { http.Error(w, \"expired RV\", 410); return }\n        if err == kv.ErrSlowConsumer { http.Error(w, \"slow consumer\", 503); return }\n        if err != nil { http.Error(w, err.Error(), 500); return }\n        break\n    }\n    defer cancel()\n    w.Header().Set(\"Content-Type\", \"application/json\")\n    w.WriteHeader(200)\n    flusher.Flush()\n    // emitKVObject decodes bytes, projects the supplied RV, writes JSON + newline,\n    // and returns any decode/write error. The other emit helpers also return errors.\n    if initial {\n        for _, item := range snapshot {\n            if err := emitKVObject(w, info, \"ADDED\", item.Value, item.ModRevision); err != nil { return }\n            flusher.Flush()\n        }\n        if err := emitBookmark(w, startRev); err != nil { return }\n        flusher.Flush()\n    }\n    delivered := startRev\n    ticker := time.NewTicker(30 * time.Second)\n    defer ticker.Stop()\n    for {\n        select {\n        case <-r.Context().Done(): return\n        case <-ticker.C:\n            if err := emitBookmark(w, delivered); err != nil { return }\n            flusher.Flush()\n        case ev, ok := <-ch:\n            if !ok {\n                if err, failed := <-errs; failed {\n                    if err == kv.ErrCompacted { emitErr(w, 410, \"Expired\", \"history compacted\")\n                    } else { emitErr(w, 503, \"ServiceUnavailable\", \"slow consumer\") }\n                    flusher.Flush()\n                }\n                return\n            }\n            kind := \"MODIFIED\"\n            if ev.Type == \"DELETE\" { kind = \"DELETED\"\n            } else if ev.PrevRev == 0 { kind = \"ADDED\" }\n            if err := emitKVObject(w, info, kind, ev.Value, ev.Revision); err != nil { return }\n            delivered = ev.Revision\n            flusher.Flush()\n        }\n    }\n}\n```\n\nKeep stream writes bounded and cancelable, while allowing the overall Watch to remain open.\nThe bookmark above reports the last event actually written, so it never advances past queued events.\n\n"
+    },
+    {
+      "ids": [
+        "KV-002",
+        "WATCH-001"
+      ],
+      "before": "                If compactRev >= 12345 → 410 Gone in stream",
+      "after": "                If compactRev > 12345 → 410 before opening the stream"
+    },
+    {
+      "ids": [
+        "KUBELET-001"
+      ],
+      "before": "    sandbox, _ := k.runtime.GetSandboxByPodID(pod.UID)\n    runningContainers, _ := k.runtime.ListContainers(pod.UID)",
+      "after": "    // Runtime lookup uses the Pod UID, including after kubelet restart.\n    sandbox, err := k.runtime.GetSandboxByPodID(pod.UID)\n    if err != nil && !isNotFound(err) { return err }\n    runningContainers, err := k.runtime.ListContainers(pod.UID)\n    if err != nil { return err }"
+    },
+    {
+      "ids": [
+        "KUBELET-002"
+      ],
+      "before": "        // 3. Invoke CNI ADD on the new sandbox netns.\n        podIP, err := k.cni.Add(pod, sandbox.NetnsPath)\n        if err != nil {\n            k.runtime.StopPodSandbox(sandbox.ID)\n            k.runtime.RemovePodSandbox(sandbox.ID)\n            return err\n        }\n        pod.Status.PodIP = podIP\n    }",
+      "after": "    }\n    // 3. Ensure network state and recover PodIP for an existing sandbox, too.\n    // This is for the custom runtime. A CRI runtime owning CNI does this itself.\n    podIP, err := k.cni.Ensure(pod, sandbox.NetnsPath)\n    if err != nil { return err }\n    pod.Status.PodIP = podIP"
+    },
+    {
+      "ids": [
+        "KUBELET-003",
+        "KUBELET-004"
+      ],
+      "before": "    // 4. For each desired container in pod.Spec.Containers + InitContainers:\n    desired := pod.Spec.InitContainers\n    desired = append(desired, pod.Spec.Containers...)\n    have := indexByName(runningContainers)\n    for _, c := range desired {\n        rc, exists := have[c.Name]\n        if !exists {\n            // Create + start.\n            crResp, _ := k.runtime.CreateContainer(&cri.CreateContainerRequest{\n                PodSandboxID: sandbox.ID,\n                Config:       containerSpec(pod, &c),\n            })\n            k.runtime.StartContainer(&cri.StartContainerRequest{ContainerID: crResp.ContainerID})\n            continue\n        }\n        if rc.State == \"EXITED\" && pod.Spec.RestartPolicy == \"Always\" {\n            k.runtime.RemoveContainer(rc.ID)\n            crResp, _ := k.runtime.CreateContainer(&cri.CreateContainerRequest{\n                PodSandboxID: sandbox.ID, Config: containerSpec(pod, &c),\n            })\n            k.runtime.StartContainer(&cri.StartContainerRequest{ContainerID: crResp.ContainerID})\n        }\n    }\n\n",
+      "after": "    // 4. Init containers are sequential; a successful one stays completed.\n    have := indexByName(runningContainers)\n    for _, c := range pod.Spec.InitContainers {\n        state, err := k.ensureContainer(pod, sandbox, c, have[c.Name], true)\n        if err != nil { return err }\n        if state.State != \"EXITED\" || state.ExitCode != 0 {\n            k.statusMgr.SetPodStatus(pod, statusFromFreshRuntime(pod))\n            return nil // wait, retry a failed init, or report Never/Failed\n        }\n    }\n    for _, c := range pod.Spec.Containers {\n        if _, err := k.ensureContainer(pod, sandbox, c, have[c.Name], false); err != nil { return err }\n    }\n    desired := append(append([]Container(nil), pod.Spec.InitContainers...), pod.Spec.Containers...)\n\n"
+    },
+    {
+      "ids": [
+        "KUBELET-004"
+      ],
+      "before": "k.statusMgr.SetPodStatus(pod, computeStatus(pod, sandbox, runningContainers))",
+      "after": "k.statusMgr.SetPodStatus(pod, statusFromFreshRuntime(pod))"
+    },
+    {
+      "ids": [
+        "KUBELET-001",
+        "KUBELET-002",
+        "KUBELET-003",
+        "KUBELET-004",
+        "KUBELET-007"
+      ],
+      "before": "This is ~80 lines that demonstrate every essential kubelet behavior.",
+      "after": "`ensureContainer` first observes actual state: create missing containers, start Created containers,\nreuse Running containers, and apply restart policy to Exited containers. Successful init containers\nstay completed; failed init containers retry unless the policy is Never. For applications, Never\nkeeps the result, OnFailure retries nonzero exits, and Always retries either exit code. Retried\nattempts use a bounded backoff. Check image availability and pull when missing before Create/Start;\npropagate errors, and use stable Pod UID/container/attempt labels to recover a lost response.\n\n`Ensure` checks existing network state and repairs or retries missing setup; it is not an unconditional\nsecond ADD over an already configured interface. Remove a deleted Pod's CNI state and sandbox in\nretryable steps. Register the Node and periodically report capacity/Ready; an API List failure keeps\nrunning containers intact. [The runtime contract](../docs/contracts/kubelet-runtime.md) and\n[existing experiments](../docs/progress/N01-R01.md) cover these omitted helpers.\n\nThis is the kubelet loop; several implementation details remain to be filled in."
+    },
+    {
+      "ids": [
+        "KUBELET-005"
+      ],
+      "before": "        for podID, states := range newObs {\n            prev := p.lastObs[podID]",
+      "after": "        for podID := range unionPodIDs(p.lastObs, newObs) {\n            states := newObs[podID]\n            prev := p.lastObs[podID]"
+    },
+    {
+      "ids": [
+        "SCHED-005"
+      ],
+      "before": "       2. Filter:    for each node, run feasibility checks in parallel",
+      "after": "       2. Filter:    for each node, run feasibility checks"
+    },
+    {
+      "ids": [
+        "XC-003",
+        "KUBELET-006"
+      ],
+      "before": "       5. Bind:      PATCH /api/v1/namespaces/<ns>/pods/<name>/binding\n                     with spec.nodeName = chosen\n                     (binding is a subresource so it doesn't conflict with\n                      kubelet's status PATCHes)",
+      "after": "       5. Bind:      POST /api/v1/namespaces/<ns>/pods/<name>/binding\n                     with target.name = chosen and Pod identity/version preconditions\n                     (the handler changes only nodeName and still checks CAS;\n                      concurrent status writes may require a re-read/retry)"
+    },
+    {
+      "ids": [
+        "SCHED-001",
+        "SCHED-004"
+      ],
+      "before": "    used := s.cache.usedOnNode(node.Name)\n    needCPU, needMem := totalRequests(pod)\n    return used.cpu+needCPU <= node.Status.Allocatable.CPU &&\n        used.memory+needMem <= node.Status.Allocatable.Memory",
+      "after": "    cpu, memory := node.Status.Allocatable.CPU, node.Status.Allocatable.Memory\n    if cpu <= 0 || memory <= 0 || !nodeReady(node) || node.Spec.Unschedulable { return false }\n    used := s.cache.usedOnNode(node.Name)\n    needCPU, needMem := totalRequests(pod)\n    // Compare by subtraction after bounds checks to avoid overflow.\n    return used.cpu >= 0 && used.cpu <= cpu && needCPU <= cpu-used.cpu &&\n        used.memory >= 0 && used.memory <= memory && needMem <= memory-used.memory"
+    },
+    {
+      "ids": [
+        "SCHED-001"
+      ],
+      "before": "    cpuUtil := (used.cpu * 100) / node.Status.Allocatable.CPU\n    memUtil := (used.memory * 100) / node.Status.Allocatable.Memory",
+      "after": "    // floorPercent uses an overflow-safe multiply/divide for nonnegative values.\n    cpuUtil := floorPercent(used.cpu, node.Status.Allocatable.CPU)\n    memUtil := floorPercent(used.memory, node.Status.Allocatable.Memory)"
+    },
+    {
+      "ids": [
+        "SCHED-002",
+        "SCHED-003",
+        "SCHED-006"
+      ],
+      "before": "### 12.3 The Binding Subresource",
+      "after": "Before scheduling, build the cache from a List of bound, nonterminal Pods. Update it by UID on\nadd/update/delete, reconcile an assumed Pod with its observed binding without counting twice, and\nrelease resources when a Pod is deleted or terminates. If a binding response is lost, re-read the\nPod before forgetting its reservation. CPU uses milliCPU and memory uses bytes; `totalRequests`\ntakes the greater of the application sum and the largest sequential init request, per resource.\nRun one scheduler/worker here. The reference uses fresh API Lists instead of a second Assume ledger;\n[the scheduler contract](../docs/contracts/scheduler.md) explains this simpler choice.\n\n### 12.3 The Binding Subresource"
+    },
+    {
+      "ids": [
+        "INFORMER-004",
+        "INFORMER-005"
+      ],
+      "before": "    lister   func() ([]Object, string, error)         // returns objects + resourceVersion\n    watcher  func(rv string) (<-chan Event, error)",
+      "after": "    lister   func(context.Context) ([]Object, string, error)\n    watcher  func(context.Context, string) (<-chan Event, func(), error) // stop cancels and joins the stream"
+    },
+    {
+      "ids": [
+        "INFORMER-001",
+        "INFORMER-006"
+      ],
+      "before": "    synced   chan struct{}\n}",
+      "after": "    synced   chan struct{}\n    syncOnce sync.Once\n}"
+    },
+    {
+      "ids": [
+        "INFORMER-001",
+        "INFORMER-002",
+        "INFORMER-003",
+        "INFORMER-004",
+        "INFORMER-005",
+        "INFORMER-006"
+      ],
+      "before": "func (inf *Informer) Run(ctx context.Context) {\n    for {\n        // 1. LIST.\n        objs, rv, err := inf.lister()\n        if err != nil { time.Sleep(time.Second); continue }\n        inf.cache.Replace(objs)\n        inf.rvLatest = rv\n        for _, o := range objs {\n            for _, h := range inf.handlers { h.OnAdd(o) }\n        }\n        close(inf.synced) // first sync done\n\n        // 2. WATCH.\n        ch, err := inf.watcher(rv)\n        if err != nil { continue }\n        for ev := range ch {\n            switch ev.Type {\n            case \"ADDED\":\n                if existing, ok := inf.cache.Get(key(ev.Object)); ok {\n                    inf.cache.Update(ev.Object)\n                    for _, h := range inf.handlers { h.OnUpdate(existing, ev.Object) }\n                } else {\n                    inf.cache.Add(ev.Object)\n                    for _, h := range inf.handlers { h.OnAdd(ev.Object) }\n                }\n                inf.rvLatest = rvOf(ev.Object)\n            case \"MODIFIED\":\n                old, _ := inf.cache.Get(key(ev.Object))\n                inf.cache.Update(ev.Object)\n                for _, h := range inf.handlers { h.OnUpdate(old, ev.Object) }\n                inf.rvLatest = rvOf(ev.Object)\n            case \"DELETED\":\n                inf.cache.Delete(key(ev.Object))\n                for _, h := range inf.handlers { h.OnDelete(ev.Object) }\n                inf.rvLatest = rvOf(ev.Object)\n            case \"ERROR\":\n                // 410 Gone — relist from scratch.\n                inf.synced = make(chan struct{})\n                goto relist\n            }\n        }\n    relist:\n        continue\n    }\n}\n```\n\nThe \"ERROR → relist\" branch is the entire recovery model. The `cache.Replace(objs)` is *not* destructive in real informers — it computes a diff and emits synthetic events for items that disappeared. Our simplified version replays everything; in `mini-informer` we add a `Replace` that diffs.\n\n",
+      "after": "func (inf *Informer) Run(ctx context.Context) {\n    for ctx.Err() == nil {\n        objs, rv, err := inf.lister(ctx)\n        if err != nil { if !waitRetry(ctx) { return }; continue }\n        // Install copies atomically, then emit the old/new diff outside the cache lock.\n        // UID change at one key is delete-old + add-new. Unchanged RV emits nothing.\n        inf.replaceAndNotify(objs)\n        inf.rvLatest = rv\n        inf.syncOnce.Do(func() { close(inf.synced) })\n        ch, stop, err := inf.watcher(ctx, rv)\n        if err != nil { if !waitRetry(ctx) { return }; continue }\n        func() {\n            defer stop()\n            for {\n                select {\n                case <-ctx.Done(): return\n                case ev, ok := <-ch:\n                    if !ok || ev.Type == \"ERROR\" { return }\n                    if ev.Type == \"BOOKMARK\" { inf.rvLatest = rvOf(ev.Object); continue }\n                    // Validate key/UID/RV, install a deep copy, then notify with copies.\n                    inf.applyAndNotify(ev)\n                    inf.rvLatest = rvOf(ev.Object)\n                }\n            }\n        }()\n        if !waitRetry(ctx) { return }\n    }\n}\n```\n\nThe reconnect loop retains the cache while List fails and applies a diff after List succeeds:\nnew keys produce OnAdd, changed keys OnUpdate, missing keys OnDelete. Initialize `synced` once;\nclose it once after installing the first List and its notifications. `waitRetry` is a bounded retry\ndelay selected together with ctx.Done. Cache reads, event callbacks and replacements use copies.\nThe simple loop above re-lists after a disconnect; resuming the last applied RV after ordinary EOF\nis an alternative, with 410/invalid events still returning to List. Every old stream is stopped first.\n\n"
+    },
+    {
+      "ids": [
+        "QUEUE-001",
+        "QUEUE-003"
+      ],
+      "before": "    rateLimit   map[string]int        // exponential backoff counter\n    mu          sync.Mutex",
+      "after": "    rateLimit   map[string]int        // exponential backoff counter\n    timers      map[string]*time.Timer\n    shutdown    bool\n    mu          sync.Mutex"
+    },
+    {
+      "ids": [
+        "QUEUE-001",
+        "QUEUE-002"
+      ],
+      "before": "    defer q.mu.Unlock()\n    if _, ok := q.dirty[key]; ok { return } // coalesce",
+      "after": "    defer q.mu.Unlock()\n    if q.shutdown { return }\n    if timer := q.timers[key]; timer != nil { timer.Stop(); delete(q.timers, key) }\n    delete(q.delayed, key)\n    q.addLocked(key)\n}\n\nfunc (q *RateLimitingInterface) addLocked(key string) {\n    if _, ok := q.dirty[key]; ok { return } // coalesce"
+    },
+    {
+      "ids": [
+        "QUEUE-001",
+        "QUEUE-002",
+        "QUEUE-005"
+      ],
+      "before": "func (q *RateLimitingInterface) AddRateLimited(key string) {\n    q.mu.Lock()\n    q.rateLimit[key]++\n    delay := time.Duration(min(1<<q.rateLimit[key], 60)) * time.Second\n    q.delayed[key] = time.Now().Add(delay)\n    q.mu.Unlock()\n    // A background goroutine moves delayed keys back into queue when time arrives.\n}\n\n",
+      "after": "func (q *RateLimitingInterface) AddRateLimited(key string) {\n    q.mu.Lock()\n    defer q.mu.Unlock()\n    if q.shutdown { return }\n    retries := q.rateLimit[key]\n    if retries < 63 { q.rateLimit[key]++ }\n    delay := time.Second\n    for i := 0; i < retries && delay < 60*time.Second; i++ { delay *= 2 }\n    if delay > 60*time.Second { delay = 60*time.Second }\n    deadline := time.Now().Add(delay)\n    if old, ok := q.delayed[key]; ok && !deadline.Before(old) { return }\n    if old := q.timers[key]; old != nil { old.Stop() }\n    q.delayed[key] = deadline\n    var timer *time.Timer\n    timer = time.AfterFunc(delay, func() {\n        q.mu.Lock()\n        defer q.mu.Unlock()\n        if q.shutdown || q.timers[key] != timer { return }\n        delete(q.timers, key)\n        delete(q.delayed, key)\n        q.addLocked(key)\n    })\n    q.timers[key] = timer\n}\n\n"
+    },
+    {
+      "ids": [
+        "QUEUE-003",
+        "XC-004"
+      ],
+      "before": "    for len(q.queue) == 0 { q.cond.Wait() }\n    key := q.queue[0]",
+      "after": "    for len(q.queue) == 0 && !q.shutdown { q.cond.Wait() }\n    if q.shutdown { return \"\", true }\n    key := q.queue[0]"
+    },
+    {
+      "ids": [
+        "QUEUE-003"
+      ],
+      "before": "    if _, ok := q.dirty[key]; ok {\n        // Re-enqueue: a new event arrived during processing.",
+      "after": "    if _, ok := q.dirty[key]; ok && !q.shutdown {\n        // Re-enqueue: a new event arrived during processing."
+    },
+    {
+      "ids": [
+        "QUEUE-001",
+        "QUEUE-002",
+        "QUEUE-003",
+        "XC-004"
+      ],
+      "before": "    delete(q.rateLimit, key)\n    delete(q.delayed, key)\n}\n```\n\nThe four invariants:",
+      "after": "    delete(q.rateLimit, key)\n    if timer := q.timers[key]; timer != nil { timer.Stop(); delete(q.timers, key) }\n    delete(q.delayed, key)\n}\n\nfunc (q *RateLimitingInterface) ShutDown() {\n    q.mu.Lock()\n    defer q.mu.Unlock()\n    q.shutdown = true\n    for key, timer := range q.timers { timer.Stop(); delete(q.timers, key) }\n    clear(q.delayed)\n    q.queue = nil\n    q.cond.Broadcast()\n}\n```\n\nInitialize every map and `q.cond = sync.NewCond(&q.mu)` in the queue constructor. Each worker's\nowner calls ShutDown when ctx is canceled; `Get` returns `quit=true`, matching the worker loops.\nA successful Get always has a Done, including failed reconciles. Canceling a timer also removes\nits identity from the map, so an already-started old callback cannot enqueue a replacement timer's key.\n\nThe four invariants:"
+    },
+    {
+      "ids": [
+        "RS-001"
+      ],
+      "before": "    allPods, _ := c.podLister.List()\n    owned := []*Pod{}",
+      "after": "    allPods, err := c.api.ListPods(rs.Namespace) // committed writes count on the next pass\n    if err != nil { return err }\n    owned := []*Pod{}"
+    },
+    {
+      "ids": [
+        "RS-001"
+      ],
+      "before": "        if p.DeletionTimestamp == nil { alive = append(alive, p) }",
+      "after": "        if p.DeletionTimestamp == nil && p.Status.Phase != \"Succeeded\" && p.Status.Phase != \"Failed\" {\n            alive = append(alive, p)\n        }"
+    },
+    {
+      "ids": [
+        "RS-001",
+        "RS-006"
+      ],
+      "before": "    rs.Status.Replicas = int32(len(owned))\n    rs.Status.ReadyReplicas = countReady(owned)\n    rs.Status.AvailableReplicas = countAvailable(owned)\n    return c.api.UpdateReplicaSetStatus(rs)",
+      "after": "    observed, err := c.api.ListOwnedActivePods(rs) // namespace + owner UID + selector\n    if err != nil { return err }\n    next := rs.DeepCopy()\n    next.Status.Replicas = int32(len(observed))\n    next.Status.ReadyReplicas = countReady(observed)\n    next.Status.AvailableReplicas = countAvailable(observed)\n    if statusEqual(rs.Status, next.Status) { return nil }\n    return c.api.UpdateReplicaSetStatus(next)"
+    },
+    {
+      "ids": [
+        "RS-001",
+        "RS-003",
+        "RS-006"
+      ],
+      "before": "Read this carefully. Every line maps to a real K8s concept:",
+      "after": "Validate template labels against the selector at the API. `isOwnedBy` compares kind/name/UID and\nnamespace; template materialization copies the template and assigns fresh identity. Use stable\nowner-UID/slot names for create retries with uncertain responses, or an expectations ledger when\nreading from cache. Observe committed creations before deciding how many more to create. A status\nwrite uses RV and skips unchanged state. Pod updates enqueue both old and new owners.\n\nRead this carefully. Every line maps to a real K8s concept:"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "        newRS, _ = c.api.CreateRS(newRS)",
+      "after": "        var err error\n        newRS, err = c.api.CreateRS(newRS)\n        if err != nil { return err }"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "    // 2. Compute the rolling step.\n    desired := dep.Spec.Replicas",
+      "after": "    // 2. Wait for RS observations to catch up before the next rolling step.\n    for _, rs := range append(append([]*ReplicaSet(nil), oldRSs...), newRS) {\n        if rs.Status.Replicas != rs.Spec.Replicas { return nil }\n    }\n    desired := dep.Spec.Replicas"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "            newRS.Spec.Replicas += min(room, desired-newRS.Spec.Replicas)\n            c.api.UpdateRS(newRS)",
+      "after": "            next := newRS.DeepCopy()\n            next.Spec.Replicas += min(room, desired-newRS.Spec.Replicas)\n            return c.api.UpdateRS(next) // errors are retried; cache objects stay unchanged"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "    if newRS.Status.ReadyReplicas > 0 && len(oldRSs) > 0 {",
+      "after": "    if len(oldRSs) > 0 { // maxSurge=0 may need an old replica removed first"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "                    old.Spec.Replicas -= reduce\n                    c.api.UpdateRS(old)\n                    available -= reduce\n                    if available == 0 { break }",
+      "after": "                    next := old.DeepCopy()\n                    next.Spec.Replicas -= reduce\n                    return c.api.UpdateRS(next)"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "    dep.Status.Replicas = totalReplicas(append(oldRSs, newRS))\n    dep.Status.ReadyReplicas = currentReady\n    dep.Status.UpdatedReplicas = newRS.Status.ReadyReplicas\n    return c.api.UpdateDeploymentStatus(dep)",
+      "after": "    next := dep.DeepCopy()\n    next.Status.Replicas = observedReplicas(append(oldRSs, newRS))\n    next.Status.ReadyReplicas = currentReady\n    next.Status.UpdatedReplicas = newRS.Status.Replicas\n    if statusEqual(dep.Status, next.Status) { return nil }\n    return c.api.UpdateDeploymentStatus(next)"
+    },
+    {
+      "ids": [
+        "DEPLOY-002"
+      ],
+      "before": "This is chapter 12 §deployments distilled.",
+      "after": "The update helpers use RV and propagate errors. Surge percentages round up, unavailable\npercentages round down and are capped at desired replicas; for a nonzero desired count, reject\nparameters that resolve to both zero. `UpdatedReplicas` counts observed replicas of the current\ntemplate, whether Ready or not. Waiting for the next RS event after one write keeps the budget\ncalculation tied to observed state. Unready old replicas can be reclaimed without spending the\nready budget. The [deployment contract](../docs/contracts/deployment-endpoints.md) includes the\nzero-surge and status cases checked during implementation.\n\nThis is chapter 12 §deployments distilled."
+    },
+    {
+      "ids": [
+        "EPS-001"
+      ],
+      "before": "    svc, _ := c.svcLister.Get(svcKey)\n    if svc == nil {\n        // Service deleted — delete corresponding Endpoints.\n        return c.api.DeleteEndpoints(svc.Namespace, svc.Name)\n    }",
+      "after": "    ns, name := splitKey(svcKey)\n    svc, err := c.svcLister.Get(svcKey)\n    if err != nil && !isNotFound(err) { return err }\n    if svc == nil {\n        // Service deleted — retain the key even though the object is absent.\n        return c.api.DeleteOwnedEndpoints(ns, name)\n    }"
+    },
+    {
+      "ids": [
+        "EPS-002"
+      ],
+      "before": "That's the entire Endpoints controller.",
+      "after": "For each Pod resolve an omitted targetPort to the Service port, an integer to that port, or a\nname to the matching container port/protocol. Group addresses by resolved port; include only Ready\napplications with valid Pod IPs, sort output, and skip unchanged writes. Pod old/new label and Ready\nchanges enqueue the affected Service keys. Preserve selectorless/manual Endpoints; automatic\nEndpoints carry the Service UID so same-name replacements can be distinguished.\n\nThat is the shape of the Endpoints controller."
+    },
+    {
+      "ids": [
+        "CNI-003"
+      ],
+      "before": "    case \"CHECK\": os.Exit(0)",
+      "after": "    case \"CHECK\": must(checkAllocatedInterfaceAddressRoute(&cfg))\n    case \"VERSION\": emitSupportedVersions(\"0.4.0\")\n    default: failCNI(\"unsupported CNI_COMMAND\")"
+    },
+    {
+      "ids": [
+        "CNI-004"
+      ],
+      "before": "    IPs []struct {\n        Address string `json:\"address\"`\n        Gateway string `json:\"gateway\"`\n    } `json:\"ips\"`\n}",
+      "after": "    IPs []IPConfig `json:\"ips\"`\n}\ntype IPConfig struct {\n    Version string `json:\"version\"`\n    Address string `json:\"address\"`\n    Gateway string `json:\"gateway\"`\n}"
+    },
+    {
+      "ids": [
+        "CNI-001",
+        "CNI-002"
+      ],
+      "before": "    hostName := \"veth\" + containerID[:8]\n    veth := &netlink.Veth{\n        LinkAttrs: netlink.LinkAttrs{Name: hostName},\n        PeerName:  \"eth-tmp-\" + containerID[:8],\n    }",
+      "after": "    sum := sha256.Sum256([]byte(containerID))\n    hostName := fmt.Sprintf(\"veth%x\", sum[:5])\n    veth := &netlink.Veth{\n        LinkAttrs: netlink.LinkAttrs{Name: hostName},\n        PeerName: fmt.Sprintf(\"peer%x\", sum[:5]), // 14 bytes, even for a short ID\n    }"
+    },
+    {
+      "ids": [
+        "CNI-002",
+        "CNI-003"
+      ],
+      "before": "    hostName := \"veth\" + containerID[:8]\n    link, err := netlink.LinkByName(hostName)\n    if err == nil { netlink.LinkDel(link) }",
+      "after": "    sum := sha256.Sum256([]byte(containerID))\n    hostName := fmt.Sprintf(\"veth%x\", sum[:5])\n    link, err := netlink.LinkByName(hostName)\n    if err == nil { must(netlink.LinkDel(link))\n    } else if !isLinkNotFound(err) { must(err) }\n    // Release only after removal (or confirmed absence), under the IPAM lock.\n    must(releaseIP(cfg.IPAM.StateFile, containerID))"
+    },
+    {
+      "ids": [
+        "CNI-003"
+      ],
+      "before": "    // 1. Release IP.\n    releaseIP(cfg.IPAM.StateFile, containerID)\n    // 2. Delete veth host end (the peer in pod ns dies with the netns).",
+      "after": "    // Delete the host veth first. Its peer is removed with it.\n    // Missing namespace/link is allowed for repeated DEL."
+    },
+    {
+      "ids": [
+        "CNI-004",
+        "CNI-006"
+      ],
+      "before": "    res.IPs = []struct{Address, Gateway string}{\n        {Address: podIP.String() + \"/24\", Gateway: firstIP(cfg.IPAM.Subnet).String()},\n    }",
+      "after": "    prefix, _ := subnetMask(cfg.IPAM.Subnet).Size()\n    res.IPs = []IPConfig{\n        {Version: \"4\", Address: fmt.Sprintf(\"%s/%d\", podIP, prefix), Gateway: firstIP(cfg.IPAM.Subnet).String()},\n    }"
+    },
+    {
+      "ids": [
+        "CNI-007"
+      ],
+      "before": "        netlink.LinkAdd(br)\n        // Assign gateway IP to bridge.",
+      "after": "        if err := netlink.LinkAdd(br); err != nil && !errors.Is(err, syscall.EEXIST) { must(err) }\n        br, err = netlink.LinkByName(cfg.Bridge)\n        must(err)\n        // Assign gateway IP to bridge (AddrReplace also accepts an existing address)."
+    },
+    {
+      "ids": [
+        "CNI-007"
+      ],
+      "before": "        netlink.AddrAdd(br, &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: subnetMask(cfg.IPAM.Subnet)}})",
+      "after": "        must(netlink.AddrReplace(br, &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: subnetMask(cfg.IPAM.Subnet)}}))"
+    },
+    {
+      "ids": [
+        "CNI-009",
+        "CNI-010"
+      ],
+      "before": "    podIP := allocateIP(cfg.IPAM.StateFile, cfg.IPAM.Subnet, containerID)",
+      "after": "    podIP, err := allocateIP(cfg.IPAM.StateFile, cfg.IPAM.Subnet, containerID)\n    must(err)"
+    },
+    {
+      "ids": [
+        "CNI-009",
+        "CNI-010"
+      ],
+      "before": "func allocateIP(stateFile, subnet, containerID string) net.IP {",
+      "after": "func allocateIP(stateFile, subnet, containerID string) (net.IP, error) {"
+    },
+    {
+      "ids": [
+        "CNI-005",
+        "CNI-009",
+        "CNI-010"
+      ],
+      "before": "        return net.ParseIP(existing) // idempotent\n    }\n    cidr, _ := net.ParseCIDR(subnet)\n    for ip := nextIP(cidr.IP); cidr.Contains(ip); ip = nextIP(ip) {\n        if ip.Equal(firstIP(subnet)) { continue } // skip gateway",
+      "after": "        return net.ParseIP(existing), nil // validate saved entries when reading state\n    }\n    _, cidr, err := net.ParseCIDR(subnet)\n    if err != nil || cidr.IP.To4() == nil { return nil, fmt.Errorf(\"invalid IPv4 subnet\") }\n    ones, bits := cidr.Mask.Size()\n    if bits != 32 || ones < 16 || ones > 30 { return nil, fmt.Errorf(\"expected IPv4 /16 through /30\") }\n    broadcast := append(net.IP(nil), cidr.IP.To4()...)\n    for i := range broadcast { broadcast[i] |= ^cidr.Mask[i] }\n    gateway := firstIP(subnet) // network + 1, reserved consistently by bridge and IPAM\n    for ip := nextIP(gateway); cidr.Contains(ip) && !ip.Equal(broadcast); ip = nextIP(ip) {"
+    },
+    {
+      "ids": [
+        "CNI-010"
+      ],
+      "before": "            writeState(stateFile, state)\n            return ip",
+      "after": "            if err := writeState(stateFile, state); err != nil { return nil, err }\n            return ip, nil"
+    },
+    {
+      "ids": [
+        "CNI-010"
+      ],
+      "before": "    panic(\"ip pool exhausted\")",
+      "after": "    return nil, fmt.Errorf(\"IP pool exhausted\")"
+    },
+    {
+      "ids": [
+        "CNI-001",
+        "CNI-002",
+        "CNI-003",
+        "CNI-007",
+        "CNI-008"
+      ],
+      "before": "Twenty lines. Cross-node IPAM in real CNI plugins is harder",
+      "after": "The omitted helpers matter here: `firstIP` returns network+1; `nextIP` copies before incrementing;\nstate reads validate address range/uniqueness, and state writes sync a temporary file before rename.\nCheck every netlink/namespace operation, close namespace handles, and restore the caller's namespace.\nAn existing complete ADD returns the same allocation; partial failure removes the new veth before\nreleasing its address. Hold the state lock through allocation and network setup, using a lock-held\nallocation helper, so concurrent ADD/DEL cannot release an address still in use. CHECK compares\nallocation, interface state, bridge membership, address/prefix and default route; repeated DEL\nsucceeds when the namespace or link has already disappeared. Errors produce CNI error JSON and a\nnonzero exit. Add the errors/syscall/crypto-sha256 imports used in the corrected sketch.\n\nFor immediate IP reuse after traffic, preserve the IP-to-MAC identity or refresh old ARP mappings.\nThe tested implementation derives a local unicast MAC from the IPv4 address for Pod and gateway;\n[the network contract](../docs/contracts/network-proxy.md) records this and the ADD/DEL/CHECK experiments.\n\nCross-node IPAM in real CNI plugins is harder"
+    },
+    {
+      "ids": [
+        "PROXY-004"
+      ],
+      "before": "    return exec.Command(\"iptables-restore\", \"--noflush\").Run().WithStdin(strings.Join(rules, \"\\n\"))",
+      "after": "    cmd := exec.Command(\"iptables-restore\", \"--noflush\")\n    cmd.Stdin = strings.NewReader(strings.Join(rules, \"\\n\") + \"\\n\")\n    return cmd.Run()"
+    },
+    {
+      "ids": [
+        "PROXY-003",
+        "EPS-002"
+      ],
+      "before": "                    \"-A %s -p %s -j DNAT --to-destination %s:%d\",\n                    sepChain, port.Protocol, addr.IP, port.TargetPort)",
+      "after": "                    \"-A %s -p %s --dport %d -j DNAT --to-destination %s:%d\",\n                    sepChain, port.Protocol, port.Port, addr.IP, resolvedEndpointPort(ep, addr, port))"
+    },
+    {
+      "ids": [
+        "PROXY-001",
+        "PROXY-002"
+      ],
+      "before": "### 15.2 The Reconcile",
+      "after": "For this path the node enables IPv4 forwarding and bridge netfilter. Enable hairpin on each\nhost veth bridge port. Mark Service traffic (for example 0x4000) and MASQUERADE that mark in\nPOSTROUTING so a Pod can reach itself through a VIP. Install the marking rule before each Service\njump. The node runs the proxy's owned chains; preserve unrelated chains during updates and cleanup.\n\n### 15.2 The Reconcile"
+    },
+    {
+      "ids": [
+        "PROXY-002",
+        "PROXY-003",
+        "PROXY-005",
+        "PROXY-006",
+        "PROXY-007",
+        "PROXY-008",
+        "KV-010"
+      ],
+      "before": "The pattern: on any Service or Endpoints change, enqueue a single \"reconcile\" key.",
+      "after": "The rule builder above still needs three pieces. First, group by Service port/protocol and\nselect its resolved Ready endpoint addresses; a shared list of all addresses is insufficient for\nnamed or different backend ports. Include Service port/protocol and resolved backend port in the\nchain key. Use bounded hex names (within 28 characters), keep key-to-name ownership, and resolve\nhash collisions rather than merging unrelated chains.\n\nSecond, emit declarations for the owned chains, flush their previous rules, then install the new\nrules; flush/delete obsolete Service/endpoint chains after their references are removed. Include\nthe mark/MASQUERADE chain. Install PREROUTING/OUTPUT/POSTROUTING hooks only after their targets\nexist, check every command, and make hook installation/restart idempotent. Read failures retain the\nlast installed rules; commit bookkeeping only after restore succeeds. Normal exit removes owned\nhooks/chains. Full [rule/cleanup behavior and experiments](../docs/contracts/network-proxy.md) are\navailable separately.\n\nThird, VIP allocation has one writer: rebuild occupied addresses from API Services, reserve network\nand broadcast, select a free VIP, and write it through RV CAS. Other node proxies observe assigned\nVIPs. An object CAS alone does not coordinate two independent allocators choosing one address.\n\nRule changes affect new connections; existing conntrack entries can continue using an old backend.\nThis MVP checks eventual new-connection traffic after endpoint changes. Conntrack cleanup and\nconnection draining are further work; record request failures during the transition.\n\nThe pattern: on any Service or Endpoints change, enqueue a single \"reconcile\" key."
+    },
+    {
+      "ids": [
+        "DOC-005",
+        "XC-007"
+      ],
+      "before": "Let us trace what happens when, on a single Linux box, we bring up all of `minik8s` and ask it to run an nginx pod.",
+      "after": "Let us trace what happens when, in a disposable Linux VM, we bring up `minik8s` and ask it to run\nan nginx pod. This is an illustrative sequence, including proposed commands and sample timestamps.\nThe runnable reference commands and measured results are in [the integration experiments](../docs/progress/ALIGNMENT.md).\nThey include real image pull, Pod/Service traffic and cleanup."
+    },
+    {
+      "ids": [
+        "XC-001",
+        "DOC-003",
+        "DOC-005"
+      ],
+      "before": "   Terminal 1:\n     $ ./minikv --listen :2379 --snapshot /var/lib/minikv/snapshot\n     [minikv] listening on :2379, revision=0\n\n   Terminal 2:\n     $ ./mini-apiserver --kv localhost:2379 --listen :8080",
+      "after": "   Storage:\n     minikv is a library owned by mini-apiserver, not a separate server.\n\n   Terminal 2:\n     $ ./mini-apiserver --data /var/lib/minik8s/store.wal --listen :8080"
+    },
+    {
+      "ids": [
+        "DOC-001",
+        "DOC-005",
+        "XC-007"
+      ],
+      "before": "That is your full cluster, running, end to end, with every line of code in this chapter.",
+      "after": "That is the intended end-to-end path. Implement the omitted helpers and run the linked experiments\nto check the actual processes, packets and cleanup."
+    },
+    {
+      "ids": [
+        "DOC-008"
+      ],
+      "before": "export KUBECONFIG=$(kind get kubeconfig-path)",
+      "after": "export KUBECONFIG=$(mktemp); kind get kubeconfig > \"$KUBECONFIG\""
+    },
+    {
+      "ids": [
+        "DOC-001",
+        "API-006"
+      ],
+      "before": "**each phase must be runnable end-to-end before you move to the next**",
+      "after": "**make each phase runnable before you move to the next**; fill in the helpers omitted by these design sketches"
+    },
+    {
+      "ids": [
+        "RUNTIME-002",
+        "RUNTIME-003"
+      ],
+      "before": "       2. Capture /proc/<pause-pid>/ns/net into a saved path.",
+      "after": "       2. Pin /proc/<pause-pid>/ns/net with a namespace FD or named bind mount."
+    },
+    {
+      "ids": [
+        "CGROUP-001"
+      ],
+      "before": "   3.  Write cpu.max, memory.max, pids.max, io.max into the cgroup",
+      "after": "   3.  Write cpu.max, memory.max and pids.max into the cgroup"
+    },
+    {
+      "ids": [
+        "RUNTIME-004",
+        "RUNTIME-005"
+      ],
+      "before": "   7.        Mount /proc afresh (so PID ns is reflected)\n             Bind mount the rootfs directory to a tmp mount\n             pivot_root(new=rootfs_tmp, put_old=rootfs_tmp/.old)\n             umount /.old\n             chdir(\"/\")",
+      "after": "   7.        Make mount propagation private and prepare rootfs and its device files\n             pivot_root(new=rootfs_tmp, put_old=rootfs_tmp/.old)\n             chdir(\"/\"); detach /.old\n             Mount /proc afresh inside the new root (so PID ns is reflected)"
+    },
+    {
+      "ids": [
+        "CGROUP-002",
+        "RUNTIME-005"
+      ],
+      "before": "    // STEP 4-5: fork+unshare via clone3.\n    // We use Go's syscall.SysProcAttr Cloneflags as a shorthand. Real runc uses\n    // raw clone3 with CLONE_INTO_CGROUP so the child is born already inside the\n    // target cgroup (no race window).",
+      "after": "    // STEP 4-5: clone into the new namespaces and the configured cgroup.\n    // Linux SysProcAttr.UseCgroupFD requests clone3(CLONE_INTO_CGROUP).\n    // The lab kernel must support it; propagate an unsupported-kernel error."
+    },
+    {
+      "ids": [
+        "EPS-002"
+      ],
+      "before": "    pods := c.podLister.ListMatching(svc.Spec.Selector, svc.Namespace)\n    subsets := []EndpointSubset{}\n    for _, port := range svc.Spec.Ports {\n        addresses := []EndpointAddress{}\n        for _, p := range pods {\n            if !isReady(p) { continue }\n            addresses = append(addresses, EndpointAddress{IP: p.Status.PodIP, NodeName: &p.Spec.NodeName})\n        }\n        subsets = append(subsets, EndpointSubset{\n            Addresses: addresses,\n            Ports:     []EndpointPort{{Name: port.Name, Port: port.TargetPort}},\n        })\n    }\n",
+      "after": "    pods := c.podLister.ListMatching(svc.Spec.Selector, svc.Namespace)\n    groups := map[EndpointPort][]EndpointAddress{}\n    for _, port := range svc.Spec.Ports {\n        for _, p := range pods {\n            if !isReady(p) || net.ParseIP(p.Status.PodIP) == nil { continue }\n            target, ok := resolveTargetPort(p, port) // omitted -> port; integer -> value; name -> Pod port\n            if !ok { continue }\n            backendPort := EndpointPort{Name: port.Name, Port: target, Protocol: port.Protocol}\n            groups[backendPort] = append(groups[backendPort], EndpointAddress{\n                IP: p.Status.PodIP, NodeName: &p.Spec.NodeName,\n            })\n        }\n    }\n    subsets := sortedEndpointSubsets(groups)\n"
+    },
+    {
+      "ids": [
+        "PROXY-003",
+        "PROXY-005",
+        "PROXY-006",
+        "PROXY-007",
+        "EPS-002"
+      ],
+      "before": "    for _, svc := range services {\n        svcChain := \"KUBE-SVC-\" + hash(svc.Namespace+\"/\"+svc.Name)\n        rules = append(rules, \":\"+svcChain+\" - [0:0]\")\n        ep := epsByName[svc.Namespace+\"/\"+svc.Name]\n        if ep == nil || len(allAddrs(ep)) == 0 {\n            // No endpoints — reject with REJECT or just no rule.\n            continue\n        }\n        // KUBE-SERVICES → svc chain.\n        for _, port := range svc.Spec.Ports {\n            rules = append(rules, fmt.Sprintf(\n                \"-A KUBE-SERVICES -d %s/32 -p %s --dport %d -j %s\",\n                svc.Spec.ClusterIP, port.Protocol, port.Port, svcChain))\n        }\n        // SEP chains.\n        addrs := allAddrs(ep)\n        for i, addr := range addrs {\n            sepChain := \"KUBE-SEP-\" + hash(svc.Namespace+\"/\"+svc.Name+\"/\"+addr.IP)\n            rules = append(rules, \":\"+sepChain+\" - [0:0]\")\n            prob := 1.0 / float64(len(addrs)-i)\n            if i < len(addrs)-1 {\n                rules = append(rules, fmt.Sprintf(\n                    \"-A %s -m statistic --mode random --probability %f -j %s\",\n                    svcChain, prob, sepChain))\n            } else {\n                rules = append(rules, fmt.Sprintf(\"-A %s -j %s\", svcChain, sepChain))\n            }\n            for _, port := range svc.Spec.Ports {\n                rules = append(rules, fmt.Sprintf(\n                    \"-A %s -p %s --dport %d -j DNAT --to-destination %s:%d\",\n                    sepChain, port.Protocol, port.Port, addr.IP, resolvedEndpointPort(ep, addr, port)))\n            }\n        }\n    }\n",
+      "after": "    for _, svc := range services {\n        ep := epsByName[svc.Namespace+\"/\"+svc.Name]\n        for _, port := range svc.Spec.Ports {\n            // A chain key includes the service port/protocol and each resolved target port.\n            serviceKey := fmt.Sprintf(\"%s/%s/%s/%d\", svc.Namespace, svc.Name, port.Protocol, port.Port)\n            svcChain := ownedChainName(\"KUBE-SVC-\", serviceKey)\n            rules = append(rules, \":\"+svcChain+\" - [0:0]\")\n            addrs := readyEndpointsForPort(ep, port)\n            if len(addrs) == 0 { continue }\n            match := fmt.Sprintf(\"-A KUBE-SERVICES -d %s/32 -p %s --dport %d\",\n                svc.Spec.ClusterIP, strings.ToLower(port.Protocol), port.Port)\n            rules = append(rules, match+\" -j MARK --or-mark 0x4000\")\n            rules = append(rules, match+\" -j \"+svcChain)\n            for i, addr := range addrs {\n                endpointKey := fmt.Sprintf(\"%s/%s/%d\", serviceKey, addr.IP, addr.Port)\n                sepChain := ownedChainName(\"KUBE-SEP-\", endpointKey)\n                rules = append(rules, \":\"+sepChain+\" - [0:0]\")\n                prob := 1.0 / float64(len(addrs)-i)\n                if i < len(addrs)-1 {\n                    rules = append(rules, fmt.Sprintf(\n                        \"-A %s -m statistic --mode random --probability %.10f -j %s\", svcChain, prob, sepChain))\n                } else { rules = append(rules, fmt.Sprintf(\"-A %s -j %s\", svcChain, sepChain)) }\n                rules = append(rules, fmt.Sprintf(\n                    \"-A %s -p %s --dport %d -j DNAT --to-destination %s:%d\",\n                    sepChain, strings.ToLower(port.Protocol), port.Port, addr.IP, addr.Port))\n            }\n        }\n    }\n    // Prepend owned chain declarations/flushes, append obsolete-chain deletion and\n    // the mark-based POSTROUTING MASQUERADE rules before COMMIT. Preserve foreign chains.\n    rules = completeOwnedChainLifecycle(rules)\n"
+    },
+    {
+      "ids": [
+        "PROXY-003",
+        "PROXY-006",
+        "PROXY-007",
+        "EPS-002"
+      ],
+      "before": "The rule builder above still needs three pieces. First, group by Service port/protocol and\nselect its resolved Ready endpoint addresses; a shared list of all addresses is insufficient for\nnamed or different backend ports. Include Service port/protocol and resolved backend port in the\nchain key. Use bounded hex names (within 28 characters), keep key-to-name ownership, and resolve\nhash collisions rather than merging unrelated chains.",
+      "after": "`readyEndpointsForPort` selects the resolved Ready endpoint group by port name/protocol;\n`ownedChainName` uses bounded hex names (within 28 characters), records full-key ownership,\nand resolves hash collisions rather than merging unrelated chains."
+    },
+    {
+      "ids": [
+        "PROXY-005"
+      ],
+      "before": "Second, emit declarations for the owned chains, flush their previous rules, then install the new",
+      "after": "`completeOwnedChainLifecycle` emits declarations for owned chains, flushes their previous rules, then installs the new"
+    },
+    {
+      "ids": [
+        "KV-010"
+      ],
+      "before": "Third, VIP allocation has one writer:",
+      "after": "VIP allocation has one writer:"
+    },
+    {
+      "ids": [
+        "PROXY-005"
+      ],
+      "before": "    services, _ := p.svcInformer.List()\n    endpoints, _ := p.epsInformer.List()",
+      "after": "    services, err := p.svcInformer.List()\n    if err != nil { return err }\n    endpoints, err := p.epsInformer.List()\n    if err != nil { return err }"
+    },
+    {
+      "ids": [
+        "PROXY-001",
+        "PROXY-005"
+      ],
+      "before": "    // Set up KUBE-SERVICES hook from PREROUTING and OUTPUT (one-time).\n    exec.Command(\"iptables\", \"-t\", \"nat\", \"-A\", \"PREROUTING\", \"-j\", \"KUBE-SERVICES\").Run()\n    exec.Command(\"iptables\", \"-t\", \"nat\", \"-A\", \"OUTPUT\", \"-j\", \"KUBE-SERVICES\").Run()\n\n    // Watch + enqueue.",
+      "after": "    // Watch + enqueue. Install hooks only after the target chains exist."
+    },
+    {
+      "ids": [
+        "PROXY-001",
+        "PROXY-005",
+        "QUEUE-003"
+      ],
+      "before": "    go p.epsInformer.Run(ctx)\n\n    for {",
+      "after": "    go p.epsInformer.Run(ctx)\n    if !waitForSync(ctx, p.svcInformer, p.epsInformer) { return }\n    // ensureHooks creates/checks owned root chains and the three hooks; propagate errors.\n    if err := p.ensureHooks(); err != nil { p.reportError(err); return }\n    defer p.removeOwnedHooksAndChains()\n    go func() { <-ctx.Done(); p.queue.ShutDown() }()\n    p.queue.Add(\"reconcile\")\n    for {"
+    },
+    {
+      "ids": [
+        "QUEUE-001"
+      ],
+      "before": "            p.queue.AddRateLimited(\"reconcile\")\n        }\n        p.queue.Done(\"reconcile\")",
+      "after": "            p.queue.AddRateLimited(\"reconcile\")\n        } else { p.queue.Forget(\"reconcile\") }\n        p.queue.Done(\"reconcile\")"
+    },
+    {
+      "ids": [
+        "PROXY-001"
+      ],
+      "before": "         OUTPUT (nat) chain",
+      "after": "         PREROUTING (nat)"
+    },
+    {
+      "ids": [
+        "CNI-001",
+        "CNI-002",
+        "CNI-007"
+      ],
+      "before": "    \"github.com/vishvananda/netlink\"\n    \"github.com/vishvananda/netns\"",
+      "after": "    \"crypto/sha256\"\n    \"errors\"\n    \"syscall\"\n    \"github.com/vishvananda/netlink\"\n    \"github.com/vishvananda/netns\""
+    },
+    {
+      "ids": [
+        "CNI-003"
+      ],
+      "before": "nonzero exit. Add the errors/syscall/crypto-sha256 imports used in the corrected sketch.",
+      "after": "nonzero exit. These helpers are part of the plugin implementation."
+    },
+    {
+      "ids": [
+        "API-001",
+        "XC-002"
+      ],
+      "before": "type entry struct {\n    value       []byte\n    modRevision int64\n    createRev   int64\n}",
+      "after": "type entry struct {\n    value       []byte\n    modRevision int64\n    createRev   int64\n}\n\n// Range returns this exported value type to the API package.\ntype Pair struct {\n    Key string\n    Value []byte\n    ModRevision int64\n    CreateRevision int64\n}"
+    },
+    {
+      "ids": [
+        "API-001"
+      ],
+      "before": "func (s *Store) Range(prefix string) ([]kvPair, int64)",
+      "after": "func (s *Store) Range(prefix string) ([]Pair, int64)"
+    },
+    {
+      "ids": [
+        "API-001"
+      ],
+      "before": "    out := []kvPair{}",
+      "after": "    out := []Pair{}"
+    },
+    {
+      "ids": [
+        "API-001"
+      ],
+      "before": "out = append(out, kvPair{",
+      "after": "out = append(out, Pair{"
+    },
+    {
+      "ids": [
+        "API-001"
+      ],
+      "before": "    var snapshot []kvPair",
+      "after": "    var snapshot []kv.Pair"
+    }
+  ],
+  "confirmed_error_ids": [
+    "API-003",
+    "API-004",
+    "CGROUP-001",
+    "CGROUP-002",
+    "CNI-001",
+    "CNI-002",
+    "CNI-003",
+    "CNI-004",
+    "CNI-006",
+    "CNI-007",
+    "CNI-009",
+    "CNI-010",
+    "DEPLOY-002",
+    "DOC-001",
+    "DOC-003",
+    "DOC-005",
+    "DOC-008",
+    "EPS-001",
+    "INFORMER-001",
+    "INFORMER-004",
+    "INFORMER-005",
+    "KUBELET-001",
+    "KUBELET-002",
+    "KUBELET-003",
+    "KUBELET-004",
+    "KUBELET-005",
+    "KV-001",
+    "KV-002",
+    "KV-003",
+    "KV-004",
+    "KV-005",
+    "KV-007",
+    "PROTO-003",
+    "PROXY-001",
+    "PROXY-002",
+    "PROXY-003",
+    "PROXY-004",
+    "PROXY-005",
+    "PROXY-008",
+    "QUEUE-001",
+    "QUEUE-002",
+    "QUEUE-003",
+    "QUEUE-005",
+    "RS-001",
+    "RS-006",
+    "RUNTIME-001",
+    "RUNTIME-002",
+    "RUNTIME-003",
+    "RUNTIME-004",
+    "RUNTIME-005",
+    "SCHED-001",
+    "SCHED-005",
+    "WATCH-001",
+    "WATCH-002",
+    "WATCH-003",
+    "WATCH-005",
+    "XC-004",
+    "XC-007"
+  ],
+  "handled_ids": [
+    "API-001",
+    "API-002",
+    "API-003",
+    "API-004",
+    "API-005",
+    "API-006",
+    "CGROUP-001",
+    "CGROUP-002",
+    "CGROUP-003",
+    "CNI-001",
+    "CNI-002",
+    "CNI-003",
+    "CNI-004",
+    "CNI-005",
+    "CNI-006",
+    "CNI-007",
+    "CNI-008",
+    "CNI-009",
+    "CNI-010",
+    "DEPLOY-002",
+    "DOC-001",
+    "DOC-003",
+    "DOC-005",
+    "DOC-008",
+    "EPS-001",
+    "EPS-002",
+    "INFORMER-001",
+    "INFORMER-002",
+    "INFORMER-003",
+    "INFORMER-004",
+    "INFORMER-005",
+    "INFORMER-006",
+    "KUBELET-001",
+    "KUBELET-002",
+    "KUBELET-003",
+    "KUBELET-004",
+    "KUBELET-005",
+    "KUBELET-006",
+    "KUBELET-007",
+    "KV-001",
+    "KV-002",
+    "KV-003",
+    "KV-004",
+    "KV-005",
+    "KV-006",
+    "KV-007",
+    "KV-008",
+    "KV-009",
+    "KV-010",
+    "PROTO-001",
+    "PROTO-002",
+    "PROTO-003",
+    "PROXY-001",
+    "PROXY-002",
+    "PROXY-003",
+    "PROXY-004",
+    "PROXY-005",
+    "PROXY-006",
+    "PROXY-007",
+    "PROXY-008",
+    "QUEUE-001",
+    "QUEUE-002",
+    "QUEUE-003",
+    "QUEUE-005",
+    "RS-001",
+    "RS-003",
+    "RS-006",
+    "RUNTIME-001",
+    "RUNTIME-002",
+    "RUNTIME-003",
+    "RUNTIME-004",
+    "RUNTIME-005",
+    "SCHED-001",
+    "SCHED-002",
+    "SCHED-003",
+    "SCHED-004",
+    "SCHED-005",
+    "SCHED-006",
+    "WATCH-001",
+    "WATCH-002",
+    "WATCH-003",
+    "WATCH-004",
+    "WATCH-005",
+    "WATCH-006",
+    "XC-001",
+    "XC-002",
+    "XC-003",
+    "XC-004",
+    "XC-007"
+  ],
+  "unhandled_error_ids": [],
+  "original_lines": 3118,
+  "corrected_lines": 3347
+}

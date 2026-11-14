@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第一阶段验收后修订与交接 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="第一阶段验收后修订与交接">第一阶段验收后修订与交接</h1>
+<p>2026-11-05。前次接手磁盘上的部分修订，未启动新 worker。修订前文档和 Go 转录保存在 history/pre-final-repair/，来源文件的原版另存 research/superseded/。两处历史材料按当时内容保留。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>验收项</th>
+<th>本轮处理</th>
+<th>复验依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F01</td>
+<td>保留 RS helper 来源标记；撤回 RS-002 原文归因；RS-003 改为实现校验契约；补查其他辅助 cache/client</td>
+<td>records.json 的逐条边界；Go 观察测试</td>
+</tr>
+<tr>
+<td>F02</td>
+<td>保留已重新下载的 15 份固定版本材料、来源/commit 清单和旧快照；新增可重复的在线比较器</td>
+<td>final-repair/sources-online.log 与 checksums.log</td>
+</tr>
+<tr>
+<td>F03</td>
+<td>QUEUE-004 保留为官方正常语义；测试核对 dirty 与延时项并存</td>
+<td>go-queue.log</td>
+</tr>
+<tr>
+<td>F04</td>
+<td>撤回 youngest 策略导致 rollout 错误的推论；保留正常缩容行为用例</td>
+<td>go-rs.log</td>
+</tr>
+<tr>
+<td>F05</td>
+<td>撤回 Gone 非法的说法；合法 Gone/Expired 与错误终止原因分别说明</td>
+<td>固定版本 reflector 和 apimachinery 链接</td>
+</tr>
+<tr>
+<td>F06</td>
+<td>分开缓存收敛与删除通知；更正 ThreadSafeStore/DeltaFIFO 的职责；原文已声明简化</td>
+<td>go-informer.log 与官方函数</td>
+</tr>
+<tr>
+<td>F07</td>
+<td>100 条记录统一字段和分类，生成统计；修复复现入口；增加 VM 身份保护与清理顺序；补持久化覆盖结论</td>
+<td>inventory/checksums、50 测试、编译/生成拒绝、脚本语法与 guard 拒绝</td>
+</tr>
+</tbody>
+</table></div>
+<p>进一步归因修正：DEPLOY-001 等待新副本就绪、RS-004 保留部分成功写入、SCHED-007 跳过已分配 Pod 均按正常策略记录。API-001、schedulerCache 与 UpdatePodStatus 的未给出实现按接口缺口或辅助观察记录。原文代码保持原有行为，审计适配器没有被改造成第二阶段参考实现。</p>
+<p>改名映射：TestStaleObjectSurvivesReconnect → TestRelistOmitsDeleteNotification；TestOwnerMatchByName → TestOwnerIdentityIsNameInAuditTranscription；TestSelectorTemplateMismatchInfiniteCreate → TestSelectorTemplateMismatchUnderAuditAssumptions；TestScaleDownDeletesYoungest → TestScaleDownDeletesYoungestAsDocumented；TestAddRateLimitedDoesNotSuppressQueuedKey → TestDirtyRequeueAlignmentWithClientGo；TestPartialFailureNoRollback → TestPartialFailureRetainsSuccessfulCreates；TestDeploymentScaleDownGatedOnUnsetReady → TestDeploymentWaitsForReadyBeforeScaleDown；TestEndpointsTargetPortIsRaw → TestNumericTargetPortIsCopied；TestResourceTallyLostOnRestart → TestAuditCacheWithoutRebuildLosesTally；TestDeletedPodNeverFreesCapacity → TestAuditCacheWithoutDeleteHandlerRetainsCapacity；TestNodeNameFilterStrandsPod → TestPreassignedPodBypassesScheduler；TestStatusWriteIsWholeObject → TestWholeObjectStatusAdapterCanOverwriteSpec；TestNoNodeStatusReconcile → TestAuditKubeletHasNoNodeAdapter；TestRangeOrderUnstable → TestRangeMembershipWithUnspecifiedOrder。</p>
+<p>测试改善：Deployment 用例补充新副本 Ready 后的收敛检查；位移溢出用例实际调用 AddRateLimited 63/64 次；Range 用例检查成员集合，将顺序作为观察，消除随机顺序导致的假失败。前次测试数为 50，实际运行结果以 logs/final-repair/summary.json 为准。</p>
+<p>复验执行和限制在 ACCEPTANCE.md 追加记录。下一阶段从 KV 持久化与 Watch 连续性开始；需要特权运行前按 docs/VM-EXPERIMENTS.md 落实用户批准的 VM。该次未新建 VM；本轮在随后获得授权后新增隔离 VM 复验，见下节。</p>
+<h2 id="最终交付轮次">最终交付轮次</h2>
+<p>用户授权使用任意现有 KVM 或新建虚拟机后，新建隔离 KVM，通过普通 QEMU user 网络和回环 socket 连接两台 guest，宿主机未执行挂载、tap、网桥、iptables 或 namespace 配置。正式自动流程由 audit/vm/run.py 从新 overlay 重建，验收后删除临时目录。</p>
+<p>将原六项待验证实验全部结项；DOC-008 用实际 CLI 核实；补充 CNI-009/010；新增十万次 KV 历史保留探针和有限的适配器竞态复现。普通测试增至 51，编译/生成反例增至四项。记录总数为 102，统计从当前 records.json 生成。</p>
+<p>正式结果在 evidence/logs/delivery/user-space 与 fresh-vm。kernel-attempt1/2、cri-attempt1、cross-attempt1、fresh-vm-attempt1 保留环境和脚本故障；修正后真实执行通过。root 临时目录和六个调试/验收 VM 的回收结果保存在 host-cleanup.json。打包入口、清单与目录迁移验收补齐，第一阶段最终通过。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

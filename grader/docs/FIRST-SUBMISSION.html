@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>从空 main 到第一次提交 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="从空-main-到第一次提交">从空 main 到第一次提交</h1>
+<p>你写的程序和课程命令是两个程序。终端里的 <code>minik8s submit</code> 是课程工具；下面把你在 src/
+里编译出来的程序命名为 <code>./bin/my-minik8s</code>，用路径区分它们。</p>
+<h2 id="1-先看一次完整对话">1. 先看一次完整对话</h2>
+<p>测试器会启动你的程序，例如：</p>
+<pre><code class="language-text">./bin/my-minik8s /tmp/course-run/work/driver
+</code></pre>
+<p>第二个路径是测试器为本轮分配的数据目录路径，Go 的 <code>os.Args[1]</code> 会读到它。需要保存文件时，
+你的程序先用 <code>os.MkdirAll</code> 创建它。
+启动后，测试器向程序的 stdin（标准输入）写一行 JSON：</p>
+<pre><code class="language-json">{"op":"container-run","rootfs":"/root/minik8s-course/lab/rootfs","args":["exit","42"],"nonce":"run-a","resources":{"cpu":50,"memory":67108864,"pids":512},"wait":true}
+</code></pre>
+<p>这里的 container-run 是双方约定的操作名称。你的程序解析消息，找到对应处理逻辑，
+启动 <code>/root/minik8s-course/lab/rootfs/fixture</code>，给它传入 exit、42 两个参数，并等待它结束。</p>
+<p>成功采集到退出码后，你向 stdout（标准输出）写一行：</p>
+<pre><code class="language-json">{"ok":true,"exitCode":42}
+</code></pre>
+<p>子程序退出 42，你的父程序继续运行。测试器再发 reset，你清理本轮任务并回复 ok=true；
+最后发 close，你清理后以退出码 0 结束。每次响应占一行，调试信息写到 stderr（标准错误）。</p>
+<h2 id="2-fixture-是测试用的小程序">2. fixture 是测试用的小程序</h2>
+<p>源码在 <code>grader/fixtures/process.go</code>。它的 exit 模式只按参数退出，pause 模式持续运行，
+http 模式则提供测试响应。它由课程提供，你实现的是启动与管理这些任务的程序。</p>
+<p>rootfs 是一个普通目录，准备在后续隔离阶段作为容器根目录。例如：</p>
+<pre><code class="language-text">节点上的文件：/root/minik8s-course/lab/rootfs/fixture
+容器里的路径：/fixture
+</code></pre>
+<p>把 rootfs 设置为容器的 <code>/</code> 后，文件就在容器根目录下叫 fixture。宿主机 <code>/</code> 下无需放置
+这个文件。1.1 先检查启动和退出码；根目录与 PID 隔离从 1.2 开始检查。</p>
+<h2 id="3-准备两个可执行文件">3. 准备两个可执行文件</h2>
+<p>在有 Go 1.23 或更新版本的开发终端，从工程根目录执行。以下产物面向 Linux amd64 实验 VM：</p>
+<pre><code class="language-bash">mkdir -p bin
+(cd src &amp;&amp; CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../bin/my-minik8s .)
+mkdir -p lab/rootfs/proc lab/rootfs/sys lab/rootfs/dev lab/rootfs/tmp
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o lab/rootfs/fixture grader/fixtures/process.go
+</code></pre>
+<p>bin/my-minik8s 来自你的 src/main.go；lab/rootfs/fixture 来自提供的测试源码。
+当前空 main 可以编译，但还没有读取消息和回复的行为，需要你在 1.1 实现。</p>
+<h2 id="4-为正式测试准备实验-vm">4. 为正式测试准备实验 VM</h2>
+<p>第一小节正式提交在已批准、可销毁的 KVM 内运行。需要在 VM 里准备 Bash、Python 3、curl、jq
+和 coreutils 的 timeout，以及上面的课程文件和两个二进制。后续隔离、挂载、运行时与网络实验
+也在这个 VM 边界内执行。</p>
+<p>例如把工程放到 VM 的 <code>/root/minik8s-course</code>，其中包含：</p>
+<pre><code class="language-text">/root/minik8s-course/
+  grader/
+  bin/my-minik8s
+  lab/rootfs/fixture
+</code></pre>
+<p>若你配置了指向该实验 VM、以 root 登录的 SSH 别名 course-vm，可以用 scp 复制这些目录。
+course-vm 是你自己的 SSH 连接名称，替换为实际配置。</p>
+<pre><code class="language-bash">ssh course-vm 'mkdir -p /root/minik8s-course'
+scp -r grader bin lab course-vm:/root/minik8s-course/
+</code></pre>
+<p>VM 的 UUID 取自创建记录，作为下方 vm_uuid 的值。测试器会同时核对 KVM 类型和实际 UUID。
+课程命令负责测试，不会在 submit 时自动创建 VM 或安装这些依赖。确认 SSH 连接的是获批
+VM 后再运行第一小节的正式测试；第三小节的普通 KV 进程测试可在开发终端运行。</p>
+<h2 id="5-配置测试哪个程序">5. 配置“测试哪个程序”</h2>
+<p>在 VM 的工程根目录执行，先将 vm_uuid 设为本次获批 VM 创建记录里的 UUID：</p>
+<pre><code class="language-bash">cd /root/minik8s-course
+bash grader/install.sh
+minik8s init --driver ./bin/my-minik8s --fixture ./lab --vm-id "$vm_uuid"
+minik8s submit
+</code></pre>
+<p>--driver 指你编译的程序，--fixture 指包含 rootfs/fixture 的 lab 目录，--vm-id 指实验 VM。
+这些参数保存到项目的 .minik8s/config.json。当前进度为 1.1 时，submit 会执行第一段对话。</p>
+<p>第一阶段没有 HTTP 服务，暂时用不到 --adapter。它从第四小节开始，用来告诉测试器去哪里
+找 API 的启动、停止、重启脚本。</p>
+<h2 id="6-在-main-中安排什么">6. 在 main 中安排什么</h2>
+<p>可以先按这条处理顺序组织代码：</p>
+<pre><code class="language-text">读取一行 stdin
+  → 解析 JSON 的 op
+  → container-run：定位测试程序，启动并等待，返回实际退出码
+  → reset：清理本轮任务，回复 ok=true
+  → close：清理，结束父程序
+</code></pre>
+<p>字段含义与消息格式见 <a href="ADAPTER.html#stage-1">Stage 1 协议</a>。测试失败时，<code>minik8s report</code>
+显示失败项；CLI 打印的“结果目录”位于 <code>.minik8s/runs/提交ID/</code>。其中 <code>test/1.1/</code> 下的
+driver-requests.jsonl、driver-responses.jsonl 与 driver.log 分别保存输入、输出和你的 stderr。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,319 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>原教程小节的综合验收 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="原教程小节的综合验收">原教程小节的综合验收</h1>
+<p>课程的 70 个细分 stage 见 <a href="../content/README.html">课程目录</a>。本页保留底层脚本的十个编号，
+用于小节综合回归；这里的 stage 对应<a href="../../tutorial/minik8s-corrected.html#5-the-build-order-ten-phases">原教程 §5 的构建顺序</a>。
+stage 0 是前置阅读；stage 1–10 才需要提交程序。每一项测试都有固定 ID，可用 --only 单独运行。
+完整 stage 通过时 summary.json 的 stage_complete=true；单项通过则记录该项结果。</p>
+<h2 id="stage-1--手工运行容器6">Stage 1 · 手工运行容器（§6）</h2>
+<p>提供一个能启动 /fixture 的运行时适配器。测试器在获批 VM 内读取实际 /proc 和 cgroup，
+检查返回 PID 属于本次进程，并比较它与节点的 namespace。输入包括 rootfs、参数、唯一标记，
+CPU=50 毫核、memory=64 MiB、pids=512。实现可复用 runc。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CONTAINER-ISOLATION</td>
+<td>启动 pause；PID/mount/network/UTS/IPC namespace 与节点不同，容器内 PID 为 1，根目录包含提供的 fixture；reset 后进程消失</td>
+</tr>
+<tr>
+<td>CONTAINER-LIMITS</td>
+<td>从实际内核文件读取 cpu.max=5000 100000、memory.max=67108864、pids.max=512、Seccomp=2、CapEff=0x400</td>
+</tr>
+<tr>
+<td>CONTAINER-EXIT</td>
+<td>运行 exit 42，等待返回值为 42，然后清理</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-2--cri-边界7">Stage 2 · CRI 边界（§7）</h2>
+<p>通过适配器调用自己的 CRI 服务。环境提供缓存基础镜像与本地只读 registry；冷拉取镜像带有
+独有文件 /pull-proof。适配器负责调用和字段转换，容器操作由被测运行时完成。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CRI-LIFECYCLE</td>
+<td>创建 sandbox，创建容器但不启动，状态 Created；Start 后 Running；List 可见；删除后 List 为空</td>
+</tr>
+<tr>
+<td>CRI-EXIT</td>
+<td>真实任务退出 42 后，仍能查询 Exited 和原退出码</td>
+</tr>
+<tr>
+<td>CRI-PULL</td>
+<td>初始镜像不存在；Pull 后能查询并运行它；读取独有文件成功，任务退出 0</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-3--kv8">Stage 3 · KV（§8）</h2>
+<p>KV 可以是库，因此使用 JSONL 包装器调用它的公开操作。包名、文件编码、map 类型和 Go
+函数签名由实现者决定。普通用户即可运行。watch 输出以提交版本排序。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KV-REVISION</td>
+<td>写 a、覆盖 a、写 b；对象版本和全局快照一致，创建版本保留</td>
+</tr>
+<tr>
+<td>KV-CAS</td>
+<td>当前版本更新成功；旧版本和 must-not-exist 冲突，值不被覆盖</td>
+</tr>
+<tr>
+<td>KV-WATCH</td>
+<td>List 后写入、再订阅；补上间隙事件；实时删除包含前值和新的提交版本；取消可退出</td>
+</tr>
+<tr>
+<td>KV-COMPACT</td>
+<td>从压缩边界本身续接成功；早于边界的正版本返回 expired</td>
+</tr>
+<tr>
+<td>KV-RECOVERY</td>
+<td>确认写入后强杀驱动，重新打开同一目录；数据和版本保留</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-4--api9">Stage 4 · API（§9）</h2>
+<p>启动 API，使用随机 namespace。生命周期 adapter 提供启动、停止和重启；重启保留数据目录。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API-CRUD</td>
+<td>create/get/list/replace/delete，UID/RV 与冲突保护正确</td>
+</tr>
+<tr>
+<td>API-PATCH</td>
+<td>对象递归合并、null 删除、数组整体替换；旧 RV 拒绝</td>
+</tr>
+<tr>
+<td>API-STATUS</td>
+<td>写 status 后 spec/UID 保留；相同 status 不增加 RV</td>
+</tr>
+<tr>
+<td>API-BINDING</td>
+<td>目标 Node 必须存在；旧 RV 冲突，同节点当前版本重复绑定幂等，换节点拒绝</td>
+</tr>
+<tr>
+<td>API-VALIDATION</td>
+<td>坏 JSON、URL/body 身份不符、非法 RV 被拒绝，原对象保留</td>
+</tr>
+<tr>
+<td>API-RESTART</td>
+<td>写入后重启 API，UID、RV 和对象恢复</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-5--watch10">Stage 5 · Watch（§10）</h2>
+<p>使用 curl 长连接读取 NDJSON。测试在另一请求中提交变化，按条件等待收到帧；主动结束连接
+用于清理。以收到的完整事件及顺序作断言，超时判失败。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WATCH-REPLAY</td>
+<td>List/Watch 间隙写入得到补发；删除帧包含对象和更新的提交版本</td>
+</tr>
+<tr>
+<td>WATCH-INITIAL</td>
+<td>缺省 RV 先发当前对象，再发快照 bookmark；之后收到完整删除帧</td>
+</tr>
+<tr>
+<td>WATCH-INVALID</td>
+<td>非法 RV 立即返回 422</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-6--kubelet11">Stage 6 · Kubelet（§11）</h2>
+<p>只启动 API 和 kubelet，手工填写 nodeName，调度器与 CNI 还不是本阶段依赖。参考环境使用
+节点网络；运行时由环境提供。容器 ID 还会通过 crictl 查询实际状态。采用其他 CRI 时，可在
+适配器环境中提供自己的兼容客户端和 runtime endpoint。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NODE-RUN</td>
+<td>已绑定 Pod Running，CRI 中对应实际容器也 Running</td>
+</tr>
+<tr>
+<td>NODE-RESOURCES</td>
+<td>提供的检查程序在实际应用容器内核对 CPU quota、64 MiB、pids=512、seccomp 和能力集合；只有全部符合才退出 0</td>
+</tr>
+<tr>
+<td>NODE-EXIT</td>
+<td>Never 任务退出 42，报告 Failed/42</td>
+</tr>
+<tr>
+<td>NODE-INIT</td>
+<td>init 退出 42 时应用未启动</td>
+</tr>
+<tr>
+<td>NODE-VOLUME</td>
+<td>env 检查后第二个 init 写共享目录，应用验证内容；只读映射禁止写；OnFailure 失败一次后重试成功</td>
+</tr>
+<tr>
+<td>NODE-PULL</td>
+<td>registry 暂时 503，API 可观察 RuntimeError；恢复 registry 后同一 Pod 运行</td>
+</tr>
+<tr>
+<td>NODE-RESTART</td>
+<td>kubelet 重启后出现新心跳，接管同一个应用容器</td>
+</tr>
+<tr>
+<td>NODE-API-OUTAGE</td>
+<td>API 暂停时实际容器保留；恢复后继续报告状态</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-7--scheduler12">Stage 7 · Scheduler（§12）</h2>
+<p>启动 API 和 scheduler，创建测试 Node 与 Pod 对象，验证绑定行为。节点状态由测试提供，
+因此本阶段普通用户即可运行；这些检查验收调度，不启动真实容器。测试结束删除本次 Node。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SCHED-FILTER</td>
+<td>Ready=False、零容量不参与；健康节点被选择</td>
+</tr>
+<tr>
+<td>SCHED-CAPACITY</td>
+<td>800m 占用后另一个 800m 等待，50m 小请求仍能绑定；删除占用后等待项绑定</td>
+</tr>
+<tr>
+<td>SCHED-INIT</td>
+<td>最大 init 请求 1500m，让 Pod 选中 2000m 节点而非 1000m</td>
+</tr>
+<tr>
+<td>SCHED-SCORE</td>
+<td>宽节点已用一半、窄节点空闲；按利用比例选择窄节点</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-8--controllers13">Stage 8 · Controllers（§13）</h2>
+<p>启动 API 和 controller-manager。通过公开 /status 提供 Pod 观察值，先检查控制算法；真实
+容器与数据转发在 stage 10 集成验收。此处提供的观察值只用于 controller 测试。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CTRL-RS</td>
+<td>核对 kind/UID/controller 归属；独立 Pod 保留；删除子 Pod 后新 UID 补齐，删除 RS 后回收自有子对象</td>
+</tr>
+<tr>
+<td>CTRL-ROLL</td>
+<td>两副本从旧模板换到新模板，申请数不超过 3，最终只剩两个新版</td>
+</tr>
+<tr>
+<td>CTRL-ENDPOINTS</td>
+<td>命名 targetPort 解析到 8087，Ready=False 后撤下；删除 Service 后自动 Endpoints 消失</td>
+</tr>
+<tr>
+<td>CTRL-RESTART</td>
+<td>重启控制器保留原有子 Pod UID，扩容请求仍能执行</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-9--cni14">Stage 9 · CNI（§14）</h2>
+<p>按 CNI 0.4.0 标准环境变量与 stdin/stdout JSON 调用你的插件。测试器创建独立命名 netns、
+子网与 bridge；退出时 DEL、删除本次 netns/bridge，不读取 IPAM 私有文件。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CNI-IPAM</td>
+<td>/30 只有 .2 可分配；重复 ADD 幂等，第二 ID 耗尽，释放后可复用</td>
+</tr>
+<tr>
+<td>CNI-CHECK</td>
+<td>完好网络通过；删除默认路由后必须失败</td>
+</tr>
+<tr>
+<td>CNI-DEL</td>
+<td>namespace 已消失时仍可 DEL，重复 DEL 成功</td>
+</tr>
+<tr>
+<td>CNI-TRAFFIC</td>
+<td>一个 netns 中运行提供的 HTTP 进程，从另一个 netns 实际访问</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="stage-10--service-proxy15">Stage 10 · Service Proxy（§15）</h2>
+<p>启动完整组件，使用真正的 Pod 网络。由提供的 fixture 区分响应，测试器发送新连接观察
+DNAT 结果；读取 iptables 的公开规则输出来确认删除后的转发收敛。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>操作和预期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PROXY-E2E</td>
+<td>原有完整黑盒流程：CRUD/Watch→Pod→副本维护→滚动更新→ClusterIP 实际响应</td>
+</tr>
+<tr>
+<td>PROXY-PORTS</td>
+<td>两个 TCP 端口分别到不同目标；UDP 回包正确；Pod 经 VIP 命中自己；删 Service 后撤掉 VIP 规则</td>
+</tr>
+<tr>
+<td>PROXY-BALANCE</td>
+<td>两个后端返回不同标记，新连接采样覆盖两者；删除一个后撤下其 DNAT，剩余后端继续可用</td>
+</tr>
+<tr>
+<td>PROXY-FOREIGN</td>
+<td>放入无关 NAT 链，重启 proxy 并继续访问，原链规则保留</td>
+</tr>
+</tbody>
+</table></div>
+<p>原文 §14.4 的静态路由双节点另用 <code>grade.sh --case cross-node</code>；输入、断言和 fixture 见
+<a href="../README.html#%E5%8F%8C%E8%8A%82%E7%82%B9">双节点说明</a>。DNS、NodePort、HPA 等后续扩展没有纳入这些阶段。</p>
+<h2 id="失败与重做">失败与重做</h2>
+<p>每次使用新的 output 目录。stdout 给出失败 ID；summary.json 记录 pass、stage_complete、
+failed_test、cleanup 和已通过项。HTTP 请求、驱动请求、最终对象、进程日志与部分网络现场
+留在输出目录。退出前清理本次资源，清理未确认也判失败。修复后可用 --only 重跑该项，
+再运行完整 stage。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

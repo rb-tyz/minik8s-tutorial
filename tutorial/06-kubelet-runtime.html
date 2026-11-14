@@ -1,0 +1,276 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>06 Kubelet 与 Runtime：把 Pod 变成受控进程 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="06-kubelet-与-runtime把-pod-变成受控进程">06 Kubelet 与 Runtime：把 Pod 变成受控进程</h1>
+<p>模块：<strong>执行模块 / 节点与运行时适配</strong>。依赖 API；可先手工指定 nodeName，再接 scheduler。
+对应原文 §6–7、§11，以及 RUNTIME/KUBELET/CGROUP 订正。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>让一个已分配的 Pod 真正运行，报告容器 ID、状态、退出码和 PodIP，处理 init、重启策略、
+删除与节点进程重启。实验使用批准的可销毁 KVM，UUID 与虚拟化类型要先核对。</p>
+<p>需要 Go 的进程调用/JSON/context、API 对象和 Linux 文件/进程基础。namespace 隔离接口、
+PID 等视图，cgroup 组织并限制资源，容器根文件系统承载镜像内容；这些由成熟运行时实现。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>区分三个层次：kubelet 比较“本节点应有的 Pod”和实际状态；CRI 是与运行时的接口；
+containerd/runc 创建、启动和管理容器的 Linux 对象。kubelet 向 API 写观察结果。</p>
+<pre><code class="language-text">API 的 nodeName -&gt; kubelet -&gt; Runtime 适配 -&gt; CRI -&gt; containerd/runc
+                         |                       |
+                    Pod /status              CNI 建网
+</code></pre>
+<h3 id="隔离与限制各负责什么">隔离与限制各负责什么</h3>
+<p>namespace 改变进程看见的系统视图；cgroup 约束这组进程能使用的资源：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>原文中的职责</th>
+<th>在本实现中由谁设置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PID namespace</td>
+<td>容器看到自己的进程编号；PID 1 负责子进程回收/信号</td>
+<td>runc 按运行时配置创建</td>
+</tr>
+<tr>
+<td>mount namespace + rootfs</td>
+<td>独立挂载视图，根目录来自镜像；切根和挂载传播需隔离</td>
+<td>containerd/runc</td>
+</tr>
+<tr>
+<td>network namespace</td>
+<td>独立接口/路由，Pod 容器共同使用 sandbox 网络</td>
+<td>运行时创建，CNI 配网</td>
+</tr>
+<tr>
+<td>UTS/IPC namespace</td>
+<td>主机名、部分进程间通信资源隔离</td>
+<td>运行时</td>
+</tr>
+<tr>
+<td>cgroup v2</td>
+<td>CPU、内存、进程数限制，路径视图与资源控制分别设置</td>
+<td>CRI resources 经运行时生效</td>
+</tr>
+<tr>
+<td>capabilities/seccomp</td>
+<td>减少进程权限，过滤系统调用</td>
+<td>CRI security_context 经运行时加载</td>
+</tr>
+</tbody>
+</table></div>
+<p>原文 §6 的手工容器将这些步骤连起来；已订正的内核/runc 实验保存在第一阶段证据中。
+在 MiniK8s 里，把 Pod 配置正确交给 CRI，再核对容器内实际值。挂载与 namespace 操作留在
+获批 guest 的运行时中。cgroup 限额的数值映射见本章第 4 节。</p>
+<p>Pod sandbox 保存 Pod 级环境，尤其是网络 namespace；应用容器使用它。先 RunPodSandbox，
+再 CreateContainer、StartContainer。Create 与 Start 分开，Created 不是 Running。</p>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<p>Runtime 可以用四个窄操作表达：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>操作</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ready(ctx)</td>
+<td>检查 RuntimeReady；Pod 网络模式还检查 NetworkReady</td>
+</tr>
+<tr>
+<td>Sandboxes(ctx)</td>
+<td>列出属于本节点、有 Pod UID 标记的 sandbox</td>
+</tr>
+<tr>
+<td>Sync(ctx, Pod)</td>
+<td>观察/接管/创建容器，返回 PodStatus</td>
+</tr>
+<tr>
+<td>Remove(ctx, sandboxID)</td>
+<td>删除容器、停止并移除 sandbox，失败后可重试</td>
+</tr>
+</tbody>
+</table></div>
+<p>参考适配器调用固定 crictl v1.29.0 的 CRI v1。命令通过参数数组执行，有超时，失败保留
+操作名/ID 和输出。Pod 与 Node 的 HTTP、状态字段及具体 CLI 见
+<a href="../docs/contracts/kubelet-runtime.html">运行时契约</a>。</p>
+<p>Node 报告 Capacity/Allocatable、InternalIP、Ready 与心跳。Pod status 包括 phase、PodIP、
+应用/init 容器状态、ID、state、Ready、restartCount、exitCode、reason/message。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="身份与实际状态">身份与实际状态</h3>
+<p>给 sandbox/container 标记节点、Pod UID、spec 摘要；容器还记录名称、是否 init 和 attempt。
+每次 Sync 从 CRI 读取实际资源，挑选匹配 UID/spec 的有效 sandbox，清理失效/重复项，缺失
+才创建。相同 spec 的重启可以接管原进程；spec 变化则重建。</p>
+<h3 id="镜像与-createstart">镜像与 Create/Start</h3>
+<p>镜像名指向配置和文件系统层；运行时下载缺少的内容、校验摘要并准备容器根文件系统。
+MiniK8s 传递镜像引用并处理成功/失败，镜像格式与解包由运行时完成。sandbox 的 pause 镜像
+也要先可用；实验环境预先导入 fixture，冷拉取另用带独有文件层的仓库镜像检验。</p>
+<p>创建容器前先查本地镜像（ImageStatus / crictl inspecti）。查询失败时尝试 PullImage / pull；
+成功后生成配置并 create --no-pull，再 start。已有镜像复用缓存，本 MVP 未增加 ImagePullPolicy
+字段。拉取失败上报 RuntimeError，保留可复用 sandbox，下轮重试。</p>
+<h3 id="init-与应用">init 与应用</h3>
+<p>按顺序查看 init：缺失则创建/启动，运行中等待，退出 0 才进入下一个。成功 init 保留完成
+记录。失败且 Never 时 Pod Failed，应用不启动；其他策略重试失败 init。</p>
+<p>所有 init 完成后，逐个确保应用存在：Created 继续 Start，Running 接管，Exited 按策略处理。
+新 attempt 递增，旧 attempt 在新容器建立后清理；退避可按 attempt 从 1s 增至 30s。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>RestartPolicy</th>
+<th>应用退出 0</th>
+<th>应用非零退出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Never</td>
+<td>保留终止结果</td>
+<td>保留终止结果</td>
+</tr>
+<tr>
+<td>OnFailure</td>
+<td>保留成功结果</td>
+<td>退避后重试</td>
+</tr>
+<tr>
+<td>Always</td>
+<td>退避后重试</td>
+<td>退避后重试</td>
+</tr>
+</tbody>
+</table></div>
+<p>init/待启动期间为 Pending；应用都已开始且至少一个 Running 时 Pod Running。Never 应用
+全部终止后按退出码聚合为 Succeeded/Failed；OnFailure 全成功后为 Succeeded。</p>
+<h3 id="配置映射">配置映射</h3>
+<p>command/args、env、ports、hostPath 来自 Pod。hostPath 只使用节点已有 File/Directory，
+检查存在/类型，映射 readonly；同路径在不同节点是不同本地数据。</p>
+<p>本课程共用简化 CPU/memory 字段进行调度和运行时设置：CPU 是毫核，shares 是竞争权重；
+另设 CFS period=100000us，正 CPU 的 quota=毫核×100us，最低 1000us，CPU=0 不设硬上限。
+memory 是字节上限。cgroup v2 的 pids.max=512；显式选择 RuntimeDefault seccomp，能力
+全部删除后仅加 NET_BIND_SERVICE。通过 CRI 配置即可，底层加载/设置由运行时完成。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>最小 kubelet 每轮先确认 API 与运行时集合读取成功，再删除没有期望 Pod UID 的自有 sandbox。
+API 断线时保留已运行容器。Remove 顺序是删容器、停 sandbox、移除 sandbox；失败下轮再试。</p>
+<p>串行协调本节点 Pod。一个 Pod 错误写 RuntimeError 并继续其他 Pod；status 用本轮读取的
+UID/RV 写回，409/404 交给下一轮重新观察。正常退出尝试 Node Ready=False，容器保留供
+新 kubelet 接管。不要把“API 读失败”转换成空期望集合。</p>
+<p>创建或启动响应丢失时，下一轮按标签/attempt 查询，接管实际已提交资源。仅用进程内 ID
+缓存会在重启后重复建容器。日志/临时配置文件与运行资源的生命周期也要分别清理。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>原文 Watch→PLEG→pod worker 描述观察和收敛职责；本实现先用周期查询、串行协调完成。
+没有探针、驱逐、硬故障迁移、CSI、image GC、完整 QoS 或资源管理器体系。Ready 暂按应用
+进程运行，进程 Running 与 HTTP 已可访问之间仍可能有短暂间隔。</p>
+<p>CPU 请求和上限共用字段，正数极小值受内核 quota 下限影响；不提供完整 requests/limits
+模型。Linux 隔离的原理实验保留在第一阶段，参考产品复用 containerd/runc，保持 CRI/OCI
+边界。具体差异与可运行环境在契约中记录。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>任务</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N1 CRI 操作</td>
+<td>Ready、runp/create/start/inspect/remove</td>
+<td>一个 sandbox 和应用实际运行并清理</td>
+</tr>
+<tr>
+<td>N2 可恢复 Sync</td>
+<td>标签/摘要、观察状态、接管</td>
+<td>重启或响应丢失后不重复建立</td>
+</tr>
+<tr>
+<td>N3 Pod 语义</td>
+<td>init、重启策略、退避、状态聚合</td>
+<td>退出 0/42 与失败 init 正确报告</td>
+</tr>
+<tr>
+<td>N4 节点循环</td>
+<td>Node 心跳、筛本节点 Pod、status CAS、GC</td>
+<td>API 中断保留工作，删除后回收</td>
+</tr>
+<tr>
+<td>N5 配置</td>
+<td>env、hostPath、CPU/memory/PID、seccomp/caps</td>
+<td>容器内与 CRI 的实际配置相符</td>
+</tr>
+</tbody>
+</table></div>
+<p>先做 <a href="labs/cri.html">CRI 操作实验</a>，再把相同调用序列封装为 Runtime。初始 host 网络只验
+执行；接 09 的 CNI 后再用 --network-mode pod 检查独立 PodIP。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>普通接口/错误路径检查：</p>
+<pre><code class="language-bash">(cd reference &amp;&amp; go test -race -count=1 ./internal/runtime ./internal/kubelet ./cmd/mini-kubelet)
+</code></pre>
+<p>实际实验只在批准的 VM 内进行，完整入口见 <a href="10-integration.html">集成章</a>。
+<a href="labs/runtime-cases.html">运行时语义练习</a> 给出退出码、init/env/hostPath 和只读卷的具体请求。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>实际断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>普通 Pod</td>
+<td>查询 CRI 确为 Running，有真实 container ID</td>
+</tr>
+<tr>
+<td>/fixture exit 0 / 42</td>
+<td>Succeeded / Failed，退出码一致</td>
+</tr>
+<tr>
+<td>两个 init、失败 init</td>
+<td>顺序写/读共享卷；失败时应用未创建</td>
+</tr>
+<tr>
+<td>env/hostPath/readonly</td>
+<td>读到已知值；只读挂载禁止写入</td>
+</tr>
+<tr>
+<td>OnFailure/Always</td>
+<td>失败或停止后增加 attempt/restartCount</td>
+</tr>
+<tr>
+<td>kubelet 强杀后重启</td>
+<td>同一容器被接管，无多余 sandbox</td>
+</tr>
+<tr>
+<td>API 中断</td>
+<td>已运行容器保持；恢复后继续协调</td>
+</tr>
+<tr>
+<td>删除 Pod</td>
+<td>实际容器/sandbox 清空、CNI 分配释放</td>
+</tr>
+<tr>
+<td>仓库先 503 后恢复</td>
+<td>RuntimeError 可观察，恢复后实际获得唯一镜像层</td>
+</tr>
+<tr>
+<td>缓存命中且仓库离线</td>
+<td>应用仍能启动</td>
+</tr>
+<tr>
+<td>内核/进程检查</td>
+<td>cpu.max=5000 100000、memory.max=67108864、pids.max=512、Seccomp=2、CapEff=0x400</td>
+</tr>
+</tbody>
+</table></div>
+<p>最后一行是 CPU=50、memory=64 MiB 样本。记录见 <a href="../docs/progress/ALIGNMENT.html">对齐验收</a>
+和 runtime-security.txt；<a href="labs/cri.html">CRI 实验</a> 给出配置、命令与清理顺序。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>先查 nodeName，再查 RuntimeError，再看 CRI sandbox/container 状态。分清没有 sandbox、
+Created、启动失败和已退出。/proc/status 提供进程信息，退出码应从运行时状态获取。</p>
+<p>Pod Running 却访问失败时，检查应用监听和 Pod 网络，不要只重建容器。重复容器则检查
+UID/spec 标记与未知响应处理。删除后残留时先确认 API List 成功，再检查 Remove 哪一步失败。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §6–7、§11；RUNTIME/KUBELET/CGROUP 订正。</li>
+<li><a href="../docs/contracts/kubelet-runtime.html">运行时契约</a>、<a href="labs/cri.html">CRI 操作实验</a>。</li>
+<li>下一模块：<a href="07-replicaset.html">07 ReplicaSet</a>，在可执行 Pod 之上维护副本；
+  网络模块 09 可以在已能运行 sandbox 后独立实施。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

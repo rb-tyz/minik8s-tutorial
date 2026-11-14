@@ -1,0 +1,1590 @@
+--- audit/evidence/research/source-tutorial.md
++++ tutorial/minik8s-corrected.md
+@@ -1,4 +1,8 @@
+ # Building a Kubernetes from Scratch: The `minik8s` Capstone
++
++> Technical correction edition. The original 24 sections and their order are retained; fixes follow
++> the [audit](../audit/ERRORS.md) and tested implementation. [Changes and evidence](corrections/README.md)
++> are listed separately. Code-size and timing figures in the original discussion are illustrative estimates.
+ 
+ The previous 38 chapters dissected Kubernetes one organ at a time. This chapter sews them back together. We design a minimal Kubernetes-equivalent end-to-end — call it `minik8s` in spirit, the way `simpledb.py` is to a real database — and walk every line of the build order. The goal is not a runnable codebase (you can write that in a weekend once the shape is in your head) but a coherent picture: every data structure, every gRPC service, every control loop, every file path, in the order you would actually build them.
+ 
+@@ -43,7 +47,7 @@
+ 
+ ## 1. TL;DR
+ 
+-Kubernetes is **etcd plus N controllers that watch etcd**. Build the etcd-equivalent first (a watchable, revisioned, in-memory KV — ~300 lines). Wrap it in REST with optimistic concurrency on `resourceVersion` (the mini-apiserver — ~600 lines). Stream changes back to clients as an HTTP/2 event feed (watch — ~150 lines). Now write a node agent that watches Pods bound to its node and calls a local runtime (mini-kubelet — ~700 lines). Write a scheduler that watches unbound Pods and patches `spec.nodeName` (mini-scheduler — ~400 lines). Write a controller manager that watches Deployments and conjures ReplicaSets and Pods (mini-controller-manager — ~600 lines). Write a CNI plugin that hands out IPs from a file-backed pool and a bridge (mini-cni — ~100 lines). Write a proxy that rebuilds iptables rules on Service+Endpoints changes (mini-proxy — ~300 lines). Write a runtime that takes a pod spec and produces a process tree under `runc` (mini-runtime — ~400 lines). The total: **~5,000 lines**. Every concept from chapters 00–37 has a place to live in those 5,000 lines.
++Kubernetes is **etcd behind an API server, plus controllers that watch the API**. Build the etcd-equivalent first (a watchable, revisioned, in-memory KV — ~300 lines). Wrap it in REST with optimistic concurrency on `resourceVersion` (the mini-apiserver — ~600 lines). Stream changes back to clients as an HTTP event feed (watch — ~150 lines). Now write a node agent that watches Pods bound to its node and calls a local runtime (mini-kubelet — ~700 lines). Write a scheduler that watches unbound Pods and binds them through the API (mini-scheduler — ~400 lines). Write a controller manager that watches Deployments and conjures ReplicaSets and Pods (mini-controller-manager — ~600 lines). Write a CNI plugin that hands out IPs from a file-backed pool and a bridge (mini-cni — ~100 lines). Write a proxy that rebuilds iptables rules on Service+Endpoints changes (mini-proxy — ~300 lines). Write a runtime that takes a pod spec and produces a process tree under `runc` (mini-runtime — ~400 lines). The total: **~5,000 lines**. Every concept from chapters 00–37 has a place to live in those 5,000 lines.
+ 
+ The rest of the chapter walks each phase in detail, then explains why the real codebase is 800× larger.
+ 
+@@ -132,7 +136,7 @@
+ 
+ ## 4. The Component List and the Chapter Map
+ 
+-Eight binaries, four shared libraries, one runtime dependency. Below is the mapping from `minik8s` component to the real Kubernetes component to the chapter that explained it.
++The components include executables, shared libraries, and an external runtime dependency. `minikv` is linked into `mini-apiserver`; the informer and workqueue are libraries. Below is the mapping from `minik8s` component to the real Kubernetes component to the chapter that explained it.
+ 
+ | `minik8s` binary/library | Real K8s analog | Chapter | Lines |
+ |---|---|---|---|
+@@ -175,7 +179,7 @@
+    10        mini-proxy: iptables rules per Service+Endpoints    14
+ ```
+ 
+-The rule for the order is the same as the databases roadmap: **each phase must be runnable end-to-end before you move to the next**. After phase 1 you can `./minik8s-run-by-hand ./busybox-rootfs /bin/sh` and get a shell in a namespaced process. After phase 4 you can `curl -X POST mini-apiserver/api/v1/.../pods -d '{...}'` and the pod object lands in `minikv`. After phase 6 a hand-bound pod (where you set `nodeName` yourself in the JSON) actually runs as a container on the local node. After phase 7 the scheduler binds it for you. After phase 8 you POST a Deployment and three pods materialize. After phase 10 pods can reach each other via Service VIP.
++The rule for the order is the same as the databases roadmap: **make each phase runnable before you move to the next**; fill in the helpers omitted by these design sketches. After phase 1 you can `./minik8s-run-by-hand ./busybox-rootfs /bin/sh` and get a shell in a namespaced process. After phase 4 you can `curl -X POST mini-apiserver/api/v1/.../pods -d '{...}'` and the pod object lands in `minikv`. After phase 6 a hand-bound pod (where you set `nodeName` yourself in the JSON) actually runs as a container on the local node. After phase 7 the scheduler binds it for you. After phase 8 you POST a Deployment and three pods materialize. After phase 10 pods can reach each other via Service VIP.
+ 
+ Crucially: **phases 0–7 build a single-node cluster you could call a working Kubernetes**. Phases 8–10 add the things that make it interesting (multi-pod controllers, multi-node networking, services). The order mirrors the way Kubernetes itself grew: Brendan Burns's original Borg-inspired prototype was roughly the artifact of phases 0–7.
+ 
+@@ -238,19 +242,16 @@
+ 
+    1.  Resolve image → rootfs path (we'll cheat: pre-extracted tarball)
+    2.  Allocate a cgroup v2 directory under /sys/fs/cgroup/minik8s/<podID>/<ctrID>
+-   3.  Write cpu.max, memory.max, pids.max, io.max into the cgroup
+-   4.  fork() (or clone3 with CLONE_INTO_CGROUP for atomicity)
+-   5.  In child:
+-          unshare(CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWNS |
+-                  CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWCGROUP)
++   3.  Write cpu.max, memory.max and pids.max into the cgroup
++   4.  clone3 with the namespace flags and CLONE_INTO_CGROUP
++   5.  The child already has new PID, network, mount, UTS, IPC and cgroup namespaces
+           (skip CLONE_NEWUSER for simplicity; can add later)
+-   6.     fork() again — required so that PID 1 inside is the new process
+-          (the first fork's child is still in the old PID ns view of init)
+-   7.        Mount /proc afresh (so PID ns is reflected)
+-             Bind mount the rootfs directory to a tmp mount
++   6.     The clone child is PID 1 in its new PID namespace
++          (unshare(CLONE_NEWPID), unlike clone, would require a later child)
++   7.        Make mount propagation private and prepare rootfs and its device files
+              pivot_root(new=rootfs_tmp, put_old=rootfs_tmp/.old)
+-             umount /.old
+-             chdir("/")
++             chdir("/"); detach /.old
++             Mount /proc afresh inside the new root (so PID ns is reflected)
+    8.        Set up the network: at this point only `lo` exists. We will
+              call out to `mini-cni` later to add a veth pair.
+    9.        Apply seccomp filter (load BPF allowlist)
+@@ -275,6 +276,7 @@
+     "encoding/json"
+     "fmt"
+     "io/ioutil"
++    "path/filepath"
+ )
+ 
+ // ContainerSpec is the minimal config we accept (mirrors a slice of OCI runtime-spec).
+@@ -282,6 +284,7 @@
+     ID         string            // unique id (UUID)
+     PodID      string            // pod sandbox id (for cgroup parent)
+     Rootfs     string            // path to pre-extracted image filesystem
++    CgroupParent string           // empty, delegated cgroup v2 parent in this VM
+     Argv       []string          // command + args (must be relative to rootfs)
+     Env        []string          // KEY=VAL strings
+     CPUMax     string            // cgroup v2 cpu.max value, e.g., "100000 100000"
+@@ -307,18 +310,24 @@
+     spec := readSpec(os.Args[1]) // path to spec.json on stdin or file
+ 
+     // STEP 2-3: create cgroup, write limits.
+-    cgroupPath := fmt.Sprintf("/sys/fs/cgroup/minik8s/%s/%s", spec.PodID, spec.ID)
++    // The lab supplies an empty delegated parent with cpu/memory/pids available.
++    // Enable each controller in the parent before creating/configuring its children.
++    enableControllers(spec.CgroupParent, "cpu", "memory", "pids")
++    podCgroup := filepath.Join(spec.CgroupParent, spec.PodID)
++    must(os.MkdirAll(podCgroup, 0755))
++    enableControllers(podCgroup, "cpu", "memory", "pids")
++    cgroupPath := filepath.Join(podCgroup, spec.ID)
+     must(os.MkdirAll(cgroupPath, 0755))
+     if spec.CPUMax != ""  { writeFile(cgroupPath+"/cpu.max",  spec.CPUMax)  }
+     if spec.MemMax != ""  { writeFile(cgroupPath+"/memory.max", spec.MemMax) }
+     if spec.PidsMax != "" { writeFile(cgroupPath+"/pids.max",   spec.PidsMax) }
+-    // Enable the controllers in the parent before any task is moved.
+-    writeFile("/sys/fs/cgroup/minik8s/cgroup.subtree_control", "+cpu +memory +pids +io")
+-
+-    // STEP 4-5: fork+unshare via clone3.
+-    // We use Go's syscall.SysProcAttr Cloneflags as a shorthand. Real runc uses
+-    // raw clone3 with CLONE_INTO_CGROUP so the child is born already inside the
+-    // target cgroup (no race window).
++    cgroupFD, err := os.Open(cgroupPath)
++    must(err)
++    defer cgroupFD.Close()
++
++    // STEP 4-5: clone into the new namespaces and the configured cgroup.
++    // Linux SysProcAttr.UseCgroupFD requests clone3(CLONE_INTO_CGROUP).
++    // The lab kernel must support it; propagate an unsupported-kernel error.
+     cmd := exec.Command("/proc/self/exe", os.Args[1])
+     cmd.Env = append(os.Environ(), "MINIK8S_CHILD=1")
+     cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+@@ -326,12 +335,12 @@
+         Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS |
+                     syscall.CLONE_NEWUTS | syscall.CLONE_NEWIPC |
+                     syscall.CLONE_NEWNET | syscall.CLONE_NEWCGROUP,
++        // Linux clone3 places the child in the cgroup before it can run.
++        UseCgroupFD: true,
++        CgroupFD: int(cgroupFD.Fd()),
+         // No user ns for simplicity.
+     }
+     must(cmd.Start())
+-
+-    // After Start: pin pid to cgroup if not using CLONE_INTO_CGROUP.
+-    writeFile(cgroupPath+"/cgroup.procs", fmt.Sprintf("%d", cmd.Process.Pid))
+ 
+     // Hand the kubelet/CRI side a handle on the netns so mini-cni can attach.
+     fmt.Println(fmt.Sprintf("/proc/%d/ns/net", cmd.Process.Pid))
+@@ -348,15 +357,22 @@
+     // STEP 5b: set hostname in our new UTS namespace.
+     must(syscall.Sethostname([]byte(spec.Hostname)))
+ 
+-    // STEP 6: a second fork so we become PID 1 in the new ns
+-    //         (the unshare's child is still PID 1 from its parent's PoV).
+-    //         Skipped in this snippet for brevity; assume the re-exec already did it.
++    // Cloneflags created this child's PID namespace; it is already PID 1.
++    // A separate unshare(CLONE_NEWPID) would instead affect subsequent children.
+ 
+     // STEP 7: pivot_root.
+     // Make the mount propagation private so we don't pollute the host.
+     must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
+     // Bind the rootfs onto itself so it's a mountpoint.
+     must(syscall.Mount(spec.Rootfs, spec.Rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""))
++    devRoot := filepath.Join(spec.Rootfs, "dev")
++    must(os.MkdirAll(devRoot, 0755))
++    must(syscall.Mount("tmpfs", devRoot, "tmpfs", syscall.MS_NOSUID, "mode=755,size=65536k"))
++    for _, dev := range []string{"null", "zero", "urandom", "random", "tty"} {
++        dst := filepath.Join(devRoot, dev)
++        f, err := os.Create(dst); must(err); must(f.Close())
++        must(syscall.Mount("/dev/"+dev, dst, "", syscall.MS_BIND, ""))
++    }
+     must(os.MkdirAll(spec.Rootfs+"/.old", 0700))
+     must(syscall.PivotRoot(spec.Rootfs, spec.Rootfs+"/.old"))
+     must(os.Chdir("/"))
+@@ -368,14 +384,7 @@
+         syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""))
+     must(syscall.Mount("sysfs", "/sys", "sysfs",
+         syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC|syscall.MS_RDONLY, ""))
+-    must(syscall.Mount("tmpfs", "/dev", "tmpfs",
+-        syscall.MS_NOSUID, "mode=755,size=65536k"))
+-    // Recreate /dev/null, /dev/zero, /dev/urandom by bind-mounting from host.
+-    for _, dev := range []string{"null", "zero", "urandom", "random", "tty"} {
+-        path := "/dev/"+dev
+-        f, _ := os.Create(path); f.Close()
+-        must(syscall.Mount("/host/dev/"+dev, path, "", syscall.MS_BIND, ""))
+-    }
++    // /dev was prepared before pivot_root, while the source devices were reachable.
+ 
+     // STEP 9: seccomp. We load a hardcoded "default" profile that blocks
+     //         keyctl, kexec_load, perf_event_open, etc. Real runc parses
+@@ -395,6 +404,13 @@
+ 
+ That is the entire container runtime. ~300 lines if you write out the helpers. It supports one container per invocation, one cgroup, one set of namespaces. It does not handle image pull (you supply a rootfs), networking (you supply a netns path), or volumes (you bind-mount in the spec). It is the minimum viable runc.
+ 
++`enableControllers` reads the parent's `cgroup.controllers`, checks that the requested controllers
++are available, then writes their `+name` entries to `cgroup.subtree_control`. The delegated parent
++and intermediate cgroups contain no processes. Keep PID 1 alive to reap children and forward signals;
++collect its exit status with `Wait`. All namespace, mount and cgroup experiments run inside the
++approved disposable VM; [the existing kernel/runtime experiments](../docs/VM-EXPERIMENTS.md) supply
++that environment.
++
+ ### 6.3 What This Maps To in the Real World
+ 
+ This pseudocode is what `runc create` + `runc start` do, with a *lot* more error handling and the OCI runtime spec JSON. The real path through `runc` is:
+@@ -418,7 +434,7 @@
+ 
+    Pod sandbox creation:
+        1. Start pause container — single process, sleeps forever.
+-       2. Capture /proc/<pause-pid>/ns/net into a saved path.
++       2. Pin /proc/<pause-pid>/ns/net with a namespace FD or named bind mount.
+        3. Invoke mini-cni ADD against that netns path → veth + IP.
+ 
+    App container creation (same pod):
+@@ -435,9 +451,9 @@
+ 
+ ## 7. Phase 2 — A CRI-Like Local gRPC
+ 
+-Phase 1 produced a runtime invokable on the command line. Phase 2 wraps it in a gRPC service so a separate `mini-kubelet` process can drive it. This is the CRI (Container Runtime Interface) boundary. Real CRI has ~30 RPC methods. Our minimal cut is 8.
+-
+-### 7.1 The Eight-Method CRI
++Phase 1 produced a runtime invokable on the command line. Phase 2 wraps it in a gRPC service so a separate `mini-kubelet` process can drive it. This is the CRI (Container Runtime Interface) boundary. The sketch below lists eleven runtime methods and three image methods.
++
++### 7.1 The Minimal CRI
+ 
+ ```protobuf
+ // File: minik8s/proto/cri.proto
+@@ -476,7 +492,7 @@
+ message PodNamespaceConfig {
+     bool share_pid = 1;
+     bool share_ipc = 2;
+-    bool share_net = 3; // usually true; false only for hostNetwork
++    bool share_net = 3; // application containers join the sandbox network; hostNetwork uses NODE mode
+ }
+ 
+ message RunPodSandboxResponse {
+@@ -525,10 +541,17 @@
+ 
+ That is the contract. The implementation, on the `mini-runtime` side, is a thin server that:
+ 
+-1. **`RunPodSandbox`** — creates the pause container per phase 1 (just sleeps forever), saves `/proc/<pid>/ns/net` somewhere, returns the path.
++1. **`RunPodSandbox`** — creates the pause container per phase 1, pins its network namespace at a stable named path such as `/var/run/netns/cni-<id>`, and returns that path. A bind mount or an open namespace FD holds the namespace; copying the pathname alone does not. Release that handle after CNI DEL when removing the sandbox.
+ 2. **`CreateContainer`** — records the container config in a local map, returns an ID. Does *not* start the process yet (CRI semantics: create then start are separate so that the kubelet can attach hooks/probes).
+ 3. **`StartContainer`** — runs phase 1 with the saved spec, attaching to the sandbox's netns via `setns`. Returns immediately; the started process is now PID `<some-host-pid>` and PID 1 inside.
+-4. **`ContainerStatus`** — checks `/proc/<pid>/status`, examines the exit code if dead. This is the polled signal that PLEG (chapter 10) consumes.
++4. **`ContainerStatus`** — returns the state and exit status recorded by the runtime's `Wait`/`wait4` path. `/proc/<pid>/status` provides process information while the process exists; the parent collects the exit code and retains it for later status queries. This is the polled signal that PLEG (chapter 10) consumes.
++
++The proto is a service sketch: define the referenced request/response messages before generating
++code. For example, `ContainerStatusResponse` contains a `ContainerStatus status` field. The complete
++CRI v1 messages can also be reused through containerd and crictl; [the runtime contract](../docs/contracts/kubelet-runtime.md)
++and [CRI experiment](labs/cri.md) show that path. In that path the runtime invokes CNI, so kubelet
++leaves network setup to CRI. With the custom runtime above, kubelet invokes CNI as shown in §11.
++For host networking select `NODE`; the other mode joins a Pod sandbox network.
+ 
+ ### 7.2 The In-Memory State
+ 
+@@ -620,11 +643,21 @@
+     createRev   int64
+ }
+ 
++// Range returns this exported value type to the API package.
++type Pair struct {
++    Key string
++    Value []byte
++    ModRevision int64
++    CreateRevision int64
++}
++
+ type subscriber struct {
+     prefix   string
+     startRev int64
+     ch       chan Event
+     done     chan struct{}
++    errors   chan error
++    stopped  chan struct{}
+ }
+ 
+ type Store struct {
+@@ -680,7 +713,7 @@
+         }
+     }
+ 
+-    ev := Event{Type: "PUT", Key: key, Value: value, Revision: rev, PrevRev: prevRev}
++    ev := Event{Type: "PUT", Key: key, Value: append([]byte(nil), value...), Revision: rev, PrevRev: prevRev}
+     s.history = append(s.history, ev)
+     s.trimHistory()
+     s.cond.Broadcast()
+@@ -708,7 +741,7 @@
+     s.currentRev++
+     rev := s.currentRev
+     delete(s.data, key)
+-    ev := Event{Type: "DELETE", Key: key, Revision: rev, PrevRev: cur.modRevision}
++    ev := Event{Type: "DELETE", Key: key, Value: append([]byte(nil), cur.value...), Revision: rev, PrevRev: cur.modRevision}
+     s.history = append(s.history, ev)
+     s.trimHistory()
+     s.cond.Broadcast()
+@@ -716,13 +749,13 @@
+ }
+ 
+ // Range returns all values under prefix and the current revision (snapshot).
+-func (s *Store) Range(prefix string) ([]kvPair, int64) {
++func (s *Store) Range(prefix string) ([]Pair, int64) {
+     s.mu.RLock()
+     defer s.mu.RUnlock()
+-    out := []kvPair{}
++    out := []Pair{}
+     for k, e := range s.data {
+         if strings.HasPrefix(k, prefix) {
+-            out = append(out, kvPair{
++            out = append(out, Pair{
+                 Key: k, Value: append([]byte(nil), e.value...),
+                 ModRevision: e.modRevision, CreateRevision: e.createRev,
+             })
+@@ -735,95 +768,100 @@
+ ### 8.4 Watch
+ 
+ ```go
+-// Watch subscribes to events on a prefix starting from startRev (exclusive).
+-// If startRev <= compactRev, returns ErrCompacted (apiserver maps to HTTP 410).
+-func (s *Store) Watch(prefix string, startRev int64) (<-chan Event, func(), error) {
++// Watch delivers revisions strictly after startRev. Zero replays retained history.
++// A separate error channel distinguishes compaction from a slow consumer.
++func (s *Store) Watch(prefix string, startRev int64) (<-chan Event, <-chan error, func(), error) {
+     s.mu.Lock()
+-    if startRev > 0 && startRev <= s.compactRev {
++    if startRev < 0 || startRev > s.currentRev {
+         s.mu.Unlock()
+-        return nil, nil, ErrCompacted
++        return nil, nil, nil, ErrInvalidRevision
++    }
++    if startRev == 0 { startRev = s.compactRev }
++    if startRev < s.compactRev {
++        s.mu.Unlock()
++        return nil, nil, nil, ErrCompacted
+     }
+     sub := &subscriber{
+-        prefix:   prefix,
+-        startRev: startRev,
+-        ch:       make(chan Event, 256),
+-        done:     make(chan struct{}),
++        prefix: prefix, startRev: startRev,
++        ch: make(chan Event, 256), done: make(chan struct{}),
++        errors: make(chan error, 1), stopped: make(chan struct{}),
+     }
+     s.subscribers[sub] = struct{}{}
+-
+-    // Catchup: replay events from history that are > startRev and match prefix.
+-    // (history is sorted by rev.)
++    // Copy the retained events and install the live cursor under the same lock.
+     for _, ev := range s.history {
+         if ev.Revision > startRev && strings.HasPrefix(ev.Key, prefix) {
+-            // Non-blocking send is wrong here — we MUST deliver. If the buffer
+-            // is full, we close the sub and force the client to reconnect with
+-            // a fresh startRev (this is how watch backpressure works in etcd).
+             select {
+-            case sub.ch <- ev:
++            case sub.ch <- cloneEvent(ev):
+             default:
+-                close(sub.ch)
+                 delete(s.subscribers, sub)
+                 s.mu.Unlock()
+-                return nil, nil, ErrSlowConsumer
++                return nil, nil, nil, ErrSlowConsumer
+             }
+         }
+     }
++    sub.startRev = s.currentRev
+     s.mu.Unlock()
+-
+-    // Background fan-out: a goroutine that listens on cond and forwards
+-    // new events to this sub. Simplified single-goroutine version:
+     go s.subscriberLoop(sub)
+-
+     cancel := func() {
+         s.mu.Lock()
+-        defer s.mu.Unlock()
+-        if _, ok := s.subscribers[sub]; ok {
+-            delete(s.subscribers, sub)
+-            close(sub.done)
++        select {
++        case <-sub.done:
++        default: close(sub.done)
+         }
+-    }
+-    return sub.ch, cancel, nil
++        s.cond.Broadcast() // wake an idle subscriber, too
++        s.mu.Unlock()
++        <-sub.stopped
++    }
++    return sub.ch, sub.errors, cancel, nil
++}
++
++func cloneEvent(ev Event) Event {
++    ev.Value = append([]byte(nil), ev.Value...)
++    return ev
+ }
+ 
+ func (s *Store) subscriberLoop(sub *subscriber) {
+     s.mu.Lock()
+-    seen := s.currentRev
++    defer func() {
++        delete(s.subscribers, sub)
++        close(sub.ch)
++        close(sub.errors)
++        s.mu.Unlock()
++        close(sub.stopped)
++    }()
++    seen := sub.startRev
+     for {
+-        // Wait until either a new event or cancellation.
+-        for s.currentRev == seen {
+-            select {
+-            case <-sub.done:
+-                s.mu.Unlock()
+-                return
+-            default:
+-            }
+-            s.cond.Wait()
++        select { case <-sub.done: return; default: }
++        if seen < s.compactRev {
++            sub.errors <- ErrCompacted
++            return
+         }
+-        // Drain history from seen+1 to currentRev.
+         for _, ev := range s.history {
+             if ev.Revision > seen && strings.HasPrefix(ev.Key, sub.prefix) {
+                 select {
+-                case sub.ch <- ev:
++                case sub.ch <- cloneEvent(ev):
+                 default:
+-                    // Slow consumer: drop sub.
+-                    delete(s.subscribers, sub)
+-                    close(sub.ch)
+-                    s.mu.Unlock()
++                    sub.errors <- ErrSlowConsumer
+                     return
+                 }
+             }
+         }
+         seen = s.currentRev
++        for s.currentRev == seen {
++            select { case <-sub.done: return; default: }
++            s.cond.Wait()
++        }
+     }
+ }
+ 
+ func (s *Store) Compact(rev int64) {
+     s.mu.Lock()
+     defer s.mu.Unlock()
++    if rev > s.currentRev { rev = s.currentRev }
+     if rev > s.compactRev {
+         s.compactRev = rev
+-        // Drop history entries <= rev.
+-        cut := 0
++        // Drop history entries <= rev, including the entire history when appropriate.
++        cut := len(s.history)
+         for i, ev := range s.history {
+             if ev.Revision > rev { cut = i; break }
+         }
+@@ -831,6 +869,17 @@
+     }
+ }
+ ```
++
++`trimHistory` applies the same compaction rule when the retention limit is exceeded: remove the
++oldest entries and advance `compactRev` to the last removed revision. Keep the limit explicit
++(for example, an event count and a byte budget). `Range` returns both the copied entries and the
++global snapshot revision under its read lock; sort the entries by key when stable output is useful.
++
++For restart recovery, append and sync a framed, checksummed write record before publishing its new
++map state and revision. Replay complete records when opening; truncate an incomplete tail, report
++interior corruption, and preserve confirmed writes. A failed write/sync requires rollback; if rollback
++fails, stop accepting writes until recovery. This is the persistence supplied by the reference
++[KV implementation and experiments](../docs/contracts/kv.md). It leaves the map/CAS/watch model above intact.
+ 
+ ### 8.5 What This Maps To
+ 
+@@ -1006,12 +1055,16 @@
+ 
+ func (s *APIServer) handleUpdate(w http.ResponseWriter, r *http.Request, info *ResourceInfo, ns, name string) {
+     incoming := info.Prototype()
+-    json.NewDecoder(r.Body).Decode(incoming)
++    if err := json.NewDecoder(r.Body).Decode(incoming); err != nil {
++        http.Error(w, "bad body", 400); return
++    }
+     meta := incoming.GetObjectMeta()
+     if meta.ResourceVersion == "" {
+         http.Error(w, "missing RV", 409); return
+     }
+-    rv, _ := strconv.ParseInt(meta.ResourceVersion, 10, 64)
++    rv, err := strconv.ParseInt(meta.ResourceVersion, 10, 64)
++    if err != nil || rv <= 0 { http.Error(w, "invalid RV", 422); return }
++    // Read the current object, validate URL name/namespace and immutable UID/time.
+     // Defaulting + admission + validation as above.
+     // ...
+ 
+@@ -1020,13 +1073,23 @@
+     rev, err := s.kv.Put(key, bytes, rv)
+     if err == kv.ErrPreconditionFailed {
+         http.Error(w, "conflict", 409); return
++    } else if err != nil {
++        http.Error(w, "internal", 500); return
+     }
+     meta.ResourceVersion = fmt.Sprintf("%d", rev)
+     // Encode back to client.
+ }
+ ```
+ 
+-That's about 150 lines covering five verbs. The remaining ~450 lines of `mini-apiserver` are:
++These two handlers illustrate create and update. GET, LIST, DELETE and PATCH still need handlers:
++GET projects the entry's revision into object RV; LIST projects each item RV and the Range snapshot
++RV into list metadata; neither read writes the object back. DELETE may use an RV precondition and
++returns the previous object. The deletion event separately carries the deletion commit revision.
++For PATCH, use object-form JSON Merge Patch with an explicit RV: recurse through objects, replace
++arrays, delete fields set to null, then validate identity and commit with CAS. The
++[API contract](../docs/contracts/api.md) supplies routes, types, errors and examples.
++
++The remaining pieces of `mini-apiserver` are:
+ 
+ - **Validation rules** — type-specific (`validatePod`, `validateService`, etc.), ~30 lines each.
+ - **Defaulters** — assign `restartPolicy=Always`, `terminationGracePeriodSeconds=30`, ClusterIP allocation.
+@@ -1034,13 +1097,20 @@
+ - **Discovery** — `/api`, `/apis`, `/api/v1` endpoints listing what's available (so `kubectl-mini` can do introspection).
+ - **The watch handler** (next section).
+ 
++The object interface needs metadata access and a deep-copy operation. Keep `/status` and
++`/binding` in the path parser: status writes replace only status after an RV check; unchanged status
++returns without a new write. Binding uses POST, checks the Pod identity/version and target Node,
++then CAS-updates nodeName; repeating the same assignment is idempotent, a different assignment conflicts.
++These narrow writes preserve fields owned by other components. API Server owns the embedded KV;
++all other processes use HTTP.
++
+ ### 9.3 The `resourceVersion` Contract
+ 
+ This is where most apiserver subtlety lives. The rules `mini-apiserver` enforces:
+ 
+ 1. **Listing returns a `resourceVersion`** — the highest revision at the moment of the list snapshot. This is the `metadata.resourceVersion` on the *list*, not on individual items. (Per-item RVs are different and reflect when that item last changed.)
+ 2. **A watch with `resourceVersion=X`** delivers events starting *strictly after* revision `X`. The list-then-watch sequence (list at RV=L, then watch from L) is gap-free because watch's start-exclusive matches list's snapshot-at-L.
+-3. **A watch with no RV** is "start from now" — only new events.
++3. **A watch with no RV** initializes from a current snapshot: send its objects as ADDED, then a BOOKMARK at the snapshot RV, then newer events. Retry the snapshot if compaction overtakes the Range-to-Watch interval.
+ 4. **A watch with `resourceVersion=0`** means "start from any point you have; I just want to receive any events you've got" — useful for informers that don't care about catchup.
+ 5. **A compacted RV** returns `410 Gone`. Clients must re-list and re-watch.
+ 
+@@ -1060,7 +1130,9 @@
+ 
+ ### 10.1 The Wire Format
+ 
+-Real Kubernetes uses HTTP/2 with a chunked JSON stream (one event per chunk). The body is:
++Kubernetes Watch sends a stream of JSON events. HTTP/1.1 may use chunked transfer encoding;
++HTTP/2 uses DATA frames. Read complete JSON events rather than relying on transport chunk boundaries.
++The body is:
+ 
+ ```
+ {"type":"ADDED","object":{...full object...}}
+@@ -1076,69 +1148,77 @@
+ 
+ ```go
+ func (s *APIServer) handleWatch(w http.ResponseWriter, r *http.Request, info *ResourceInfo, ns string) {
+-    rvStr := r.URL.Query().Get("resourceVersion")
+-    startRev, _ := strconv.ParseInt(rvStr, 10, 64)
+     prefix := storagePrefix(info, ns)
+-
++    query := r.URL.Query()
++    initial := !query.Has("resourceVersion")
++    startRev := int64(0)
++    if !initial {
++        var err error
++        startRev, err = strconv.ParseInt(query.Get("resourceVersion"), 10, 64)
++        if err != nil || startRev < 0 { http.Error(w, "invalid RV", 422); return }
++    }
+     flusher, ok := w.(http.Flusher)
+     if !ok { http.Error(w, "no streaming", 500); return }
+-
+-    ch, cancel, err := s.kv.Watch(prefix, startRev)
+-    if err == kv.ErrCompacted {
+-        // Emit a single ERROR event, then close.
+-        w.Header().Set("Content-Type", "application/json")
+-        w.WriteHeader(200)
+-        emitErr(w, 410, "Gone", "the resourceVersion is too old")
++    var snapshot []kv.Pair
++    var ch <-chan kv.Event
++    var errs <-chan error
++    var cancel func()
++    for {
++        if r.Context().Err() != nil { return }
++        if initial { snapshot, startRev = s.kv.Range(prefix) }
++        var err error
++        ch, errs, cancel, err = s.kv.Watch(prefix, startRev)
++        if initial && err == kv.ErrCompacted { continue }
++        if err == kv.ErrCompacted { http.Error(w, "expired RV", 410); return }
++        if err == kv.ErrSlowConsumer { http.Error(w, "slow consumer", 503); return }
++        if err != nil { http.Error(w, err.Error(), 500); return }
++        break
++    }
++    defer cancel()
++    w.Header().Set("Content-Type", "application/json")
++    w.WriteHeader(200)
++    flusher.Flush()
++    // emitKVObject decodes bytes, projects the supplied RV, writes JSON + newline,
++    // and returns any decode/write error. The other emit helpers also return errors.
++    if initial {
++        for _, item := range snapshot {
++            if err := emitKVObject(w, info, "ADDED", item.Value, item.ModRevision); err != nil { return }
++            flusher.Flush()
++        }
++        if err := emitBookmark(w, startRev); err != nil { return }
+         flusher.Flush()
+-        return
+-    } else if err != nil {
+-        http.Error(w, err.Error(), 500); return
+-    }
+-    defer cancel()
+-
+-    w.Header().Set("Content-Type", "application/json")
+-    w.Header().Set("Transfer-Encoding", "chunked")
+-    w.WriteHeader(200)
+-
+-    ticker := time.NewTicker(30 * time.Second) // bookmark interval
++    }
++    delivered := startRev
++    ticker := time.NewTicker(30 * time.Second)
+     defer ticker.Stop()
+-
+     for {
+         select {
+-        case <-r.Context().Done():
+-            return
++        case <-r.Context().Done(): return
+         case <-ticker.C:
+-            // Send a BOOKMARK event — tells client the latest RV they're synced to.
+-            emitBookmark(w, s.kv.CurrentRev())
++            if err := emitBookmark(w, delivered); err != nil { return }
+             flusher.Flush()
+         case ev, ok := <-ch:
+             if !ok {
+-                // Slow consumer or store closed — emit 410 and bail.
+-                emitErr(w, 410, "Gone", "watch closed: slow consumer or compaction")
+-                flusher.Flush()
++                if err, failed := <-errs; failed {
++                    if err == kv.ErrCompacted { emitErr(w, 410, "Expired", "history compacted")
++                    } else { emitErr(w, 503, "ServiceUnavailable", "slow consumer") }
++                    flusher.Flush()
++                }
+                 return
+             }
+-            obj := info.Prototype()
+-            if ev.Type == "PUT" || ev.Type == "DELETE" {
+-                if ev.Type == "DELETE" {
+-                    // For DELETE we need the prior value — could maintain a side
+-                    // map of pre-delete snapshots. For brevity, emit minimal.
+-                    json.Unmarshal(ev.Value, obj) // may be empty
+-                } else {
+-                    json.Unmarshal(ev.Value, obj)
+-                }
+-                obj.GetObjectMeta().ResourceVersion = fmt.Sprintf("%d", ev.Revision)
+-            }
+-            kind := map[string]string{"PUT": "MODIFIED", "DELETE": "DELETED"}[ev.Type]
+-            if ev.PrevRev == 0 && ev.Type == "PUT" {
+-                kind = "ADDED"
+-            }
+-            emitEvent(w, kind, obj)
++            kind := "MODIFIED"
++            if ev.Type == "DELETE" { kind = "DELETED"
++            } else if ev.PrevRev == 0 { kind = "ADDED" }
++            if err := emitKVObject(w, info, kind, ev.Value, ev.Revision); err != nil { return }
++            delivered = ev.Revision
+             flusher.Flush()
+         }
+     }
+ }
+ ```
++
++Keep stream writes bounded and cancelable, while allowing the overall Watch to remain open.
++The bookmark above reports the last event actually written, so it never advances past queued events.
+ 
+ ### 10.3 The 410 Gone Contract
+ 
+@@ -1149,7 +1229,7 @@
+      │ GET .../pods?watch=true&resourceVersion=12345
+      ▼
+                 Look up watch from rev 12345
+-                If compactRev >= 12345 → 410 Gone in stream
++                If compactRev > 12345 → 410 before opening the stream
+      ◄────────  ERROR event {code: 410}
+      │ Connection stays open until client closes it (or closes immediately
+      │ depending on impl). Client recovers by:
+@@ -1279,8 +1359,11 @@
+ ```go
+ func (k *Kubelet) syncPod(pod *Pod) error {
+     // 1. Look up runtime state.
+-    sandbox, _ := k.runtime.GetSandboxByPodID(pod.UID)
+-    runningContainers, _ := k.runtime.ListContainers(pod.UID)
++    // Runtime lookup uses the Pod UID, including after kubelet restart.
++    sandbox, err := k.runtime.GetSandboxByPodID(pod.UID)
++    if err != nil && !isNotFound(err) { return err }
++    runningContainers, err := k.runtime.ListContainers(pod.UID)
++    if err != nil { return err }
+ 
+     // 2. Sandbox: create if missing.
+     if sandbox == nil {
+@@ -1291,39 +1374,27 @@
+         if err != nil { return err }
+         sandbox = &cri.Sandbox{ID: resp.PodSandboxID, NetnsPath: resp.NetnsPath}
+ 
+-        // 3. Invoke CNI ADD on the new sandbox netns.
+-        podIP, err := k.cni.Add(pod, sandbox.NetnsPath)
+-        if err != nil {
+-            k.runtime.StopPodSandbox(sandbox.ID)
+-            k.runtime.RemovePodSandbox(sandbox.ID)
+-            return err
++    }
++    // 3. Ensure network state and recover PodIP for an existing sandbox, too.
++    // This is for the custom runtime. A CRI runtime owning CNI does this itself.
++    podIP, err := k.cni.Ensure(pod, sandbox.NetnsPath)
++    if err != nil { return err }
++    pod.Status.PodIP = podIP
++
++    // 4. Init containers are sequential; a successful one stays completed.
++    have := indexByName(runningContainers)
++    for _, c := range pod.Spec.InitContainers {
++        state, err := k.ensureContainer(pod, sandbox, c, have[c.Name], true)
++        if err != nil { return err }
++        if state.State != "EXITED" || state.ExitCode != 0 {
++            k.statusMgr.SetPodStatus(pod, statusFromFreshRuntime(pod))
++            return nil // wait, retry a failed init, or report Never/Failed
+         }
+-        pod.Status.PodIP = podIP
+-    }
+-
+-    // 4. For each desired container in pod.Spec.Containers + InitContainers:
+-    desired := pod.Spec.InitContainers
+-    desired = append(desired, pod.Spec.Containers...)
+-    have := indexByName(runningContainers)
+-    for _, c := range desired {
+-        rc, exists := have[c.Name]
+-        if !exists {
+-            // Create + start.
+-            crResp, _ := k.runtime.CreateContainer(&cri.CreateContainerRequest{
+-                PodSandboxID: sandbox.ID,
+-                Config:       containerSpec(pod, &c),
+-            })
+-            k.runtime.StartContainer(&cri.StartContainerRequest{ContainerID: crResp.ContainerID})
+-            continue
+-        }
+-        if rc.State == "EXITED" && pod.Spec.RestartPolicy == "Always" {
+-            k.runtime.RemoveContainer(rc.ID)
+-            crResp, _ := k.runtime.CreateContainer(&cri.CreateContainerRequest{
+-                PodSandboxID: sandbox.ID, Config: containerSpec(pod, &c),
+-            })
+-            k.runtime.StartContainer(&cri.StartContainerRequest{ContainerID: crResp.ContainerID})
+-        }
+-    }
++    }
++    for _, c := range pod.Spec.Containers {
++        if _, err := k.ensureContainer(pod, sandbox, c, have[c.Name], false); err != nil { return err }
++    }
++    desired := append(append([]Container(nil), pod.Spec.InitContainers...), pod.Spec.Containers...)
+ 
+     // 5. Containers that are running but not in desired: stop & remove.
+     desiredNames := nameSet(desired)
+@@ -1335,12 +1406,25 @@
+     }
+ 
+     // 6. Update pod.status.
+-    k.statusMgr.SetPodStatus(pod, computeStatus(pod, sandbox, runningContainers))
++    k.statusMgr.SetPodStatus(pod, statusFromFreshRuntime(pod))
+     return nil
+ }
+ ```
+ 
+-This is ~80 lines that demonstrate every essential kubelet behavior. The real kubelet has thousands of lines because it also handles:
++`ensureContainer` first observes actual state: create missing containers, start Created containers,
++reuse Running containers, and apply restart policy to Exited containers. Successful init containers
++stay completed; failed init containers retry unless the policy is Never. For applications, Never
++keeps the result, OnFailure retries nonzero exits, and Always retries either exit code. Retried
++attempts use a bounded backoff. Check image availability and pull when missing before Create/Start;
++propagate errors, and use stable Pod UID/container/attempt labels to recover a lost response.
++
++`Ensure` checks existing network state and repairs or retries missing setup; it is not an unconditional
++second ADD over an already configured interface. Remove a deleted Pod's CNI state and sandbox in
++retryable steps. Register the Node and periodically report capacity/Ready; an API List failure keeps
++running containers intact. [The runtime contract](../docs/contracts/kubelet-runtime.md) and
++[existing experiments](../docs/progress/N01-R01.md) cover these omitted helpers.
++
++This is the kubelet loop; several implementation details remain to be filled in. The real kubelet has thousands of lines because it also handles:
+ 
+ - Init container ordering (must complete before app containers start) — chapter 11.
+ - Lifecycle hooks (`preStop`, `postStart`) — chapter 11.
+@@ -1378,7 +1462,8 @@
+             newObs[pod.ID] = states
+         }
+         // Diff with lastObs and emit events.
+-        for podID, states := range newObs {
++        for podID := range unionPodIDs(p.lastObs, newObs) {
++            states := newObs[podID]
+             prev := p.lastObs[podID]
+             for cid, st := range states {
+                 if prev[cid] != st {
+@@ -1449,7 +1534,7 @@
+ ```
+    Pod arrives with spec.nodeName == "":
+        1. PreFilter: collect candidate set = all nodes
+-       2. Filter:    for each node, run feasibility checks in parallel
++       2. Filter:    for each node, run feasibility checks
+                        - NodeName matches if set
+                        - Has enough CPU/memory (sum existing pods' requests)
+                        - Tolerates taints (skipped in minik8s)
+@@ -1458,10 +1543,10 @@
+                        - least-allocated: prefer nodes with more free capacity
+                      pick max score (break ties by name for determinism)
+        4. Reserve:   speculatively account the pod's resources on chosen node
+-       5. Bind:      PATCH /api/v1/namespaces/<ns>/pods/<name>/binding
+-                     with spec.nodeName = chosen
+-                     (binding is a subresource so it doesn't conflict with
+-                      kubelet's status PATCHes)
++       5. Bind:      POST /api/v1/namespaces/<ns>/pods/<name>/binding
++                     with target.name = chosen and Pod identity/version preconditions
++                     (the handler changes only nodeName and still checks CAS;
++                      concurrent status writes may require a re-read/retry)
+ ```
+ 
+ ### 12.2 The Pseudocode
+@@ -1557,20 +1642,32 @@
+ 
+ func (s *Scheduler) fits(pod *Pod, node *Node) bool {
+     if pod.Spec.NodeName != "" && pod.Spec.NodeName != node.Name { return false }
++    cpu, memory := node.Status.Allocatable.CPU, node.Status.Allocatable.Memory
++    if cpu <= 0 || memory <= 0 || !nodeReady(node) || node.Spec.Unschedulable { return false }
+     used := s.cache.usedOnNode(node.Name)
+     needCPU, needMem := totalRequests(pod)
+-    return used.cpu+needCPU <= node.Status.Allocatable.CPU &&
+-        used.memory+needMem <= node.Status.Allocatable.Memory
++    // Compare by subtraction after bounds checks to avoid overflow.
++    return used.cpu >= 0 && used.cpu <= cpu && needCPU <= cpu-used.cpu &&
++        used.memory >= 0 && used.memory <= memory && needMem <= memory-used.memory
+ }
+ 
+ func (s *Scheduler) score(pod *Pod, node *Node) int64 {
+     // Least allocated: 100 - (utilization%).
+     used := s.cache.usedOnNode(node.Name)
+-    cpuUtil := (used.cpu * 100) / node.Status.Allocatable.CPU
+-    memUtil := (used.memory * 100) / node.Status.Allocatable.Memory
++    // floorPercent uses an overflow-safe multiply/divide for nonnegative values.
++    cpuUtil := floorPercent(used.cpu, node.Status.Allocatable.CPU)
++    memUtil := floorPercent(used.memory, node.Status.Allocatable.Memory)
+     return (200 - cpuUtil - memUtil) / 2
+ }
+ ```
++
++Before scheduling, build the cache from a List of bound, nonterminal Pods. Update it by UID on
++add/update/delete, reconcile an assumed Pod with its observed binding without counting twice, and
++release resources when a Pod is deleted or terminates. If a binding response is lost, re-read the
++Pod before forgetting its reservation. CPU uses milliCPU and memory uses bytes; `totalRequests`
++takes the greater of the application sum and the largest sequential init request, per resource.
++Run one scheduler/worker here. The reference uses fresh API Lists instead of a second Assume ledger;
++[the scheduler contract](../docs/contracts/scheduler.md) explains this simpler choice.
+ 
+ ### 12.3 The Binding Subresource
+ 
+@@ -1601,13 +1698,14 @@
+ ```go
+ // File: minik8s/lib/informer/informer.go
+ type Informer struct {
+-    lister   func() ([]Object, string, error)         // returns objects + resourceVersion
+-    watcher  func(rv string) (<-chan Event, error)
++    lister   func(context.Context) ([]Object, string, error)
++    watcher  func(context.Context, string) (<-chan Event, func(), error) // stop cancels and joins the stream
+     cache    *ThreadSafeStore                          // namespace/name → object
+     handlers []ResourceEventHandler
+     indexer  *Indexer                                  // optional secondary indices
+     rvLatest string
+     synced   chan struct{}
++    syncOnce sync.Once
+ }
+ 
+ type ResourceEventHandler interface {
+@@ -1617,53 +1715,41 @@
+ }
+ 
+ func (inf *Informer) Run(ctx context.Context) {
+-    for {
+-        // 1. LIST.
+-        objs, rv, err := inf.lister()
+-        if err != nil { time.Sleep(time.Second); continue }
+-        inf.cache.Replace(objs)
++    for ctx.Err() == nil {
++        objs, rv, err := inf.lister(ctx)
++        if err != nil { if !waitRetry(ctx) { return }; continue }
++        // Install copies atomically, then emit the old/new diff outside the cache lock.
++        // UID change at one key is delete-old + add-new. Unchanged RV emits nothing.
++        inf.replaceAndNotify(objs)
+         inf.rvLatest = rv
+-        for _, o := range objs {
+-            for _, h := range inf.handlers { h.OnAdd(o) }
+-        }
+-        close(inf.synced) // first sync done
+-
+-        // 2. WATCH.
+-        ch, err := inf.watcher(rv)
+-        if err != nil { continue }
+-        for ev := range ch {
+-            switch ev.Type {
+-            case "ADDED":
+-                if existing, ok := inf.cache.Get(key(ev.Object)); ok {
+-                    inf.cache.Update(ev.Object)
+-                    for _, h := range inf.handlers { h.OnUpdate(existing, ev.Object) }
+-                } else {
+-                    inf.cache.Add(ev.Object)
+-                    for _, h := range inf.handlers { h.OnAdd(ev.Object) }
++        inf.syncOnce.Do(func() { close(inf.synced) })
++        ch, stop, err := inf.watcher(ctx, rv)
++        if err != nil { if !waitRetry(ctx) { return }; continue }
++        func() {
++            defer stop()
++            for {
++                select {
++                case <-ctx.Done(): return
++                case ev, ok := <-ch:
++                    if !ok || ev.Type == "ERROR" { return }
++                    if ev.Type == "BOOKMARK" { inf.rvLatest = rvOf(ev.Object); continue }
++                    // Validate key/UID/RV, install a deep copy, then notify with copies.
++                    inf.applyAndNotify(ev)
++                    inf.rvLatest = rvOf(ev.Object)
+                 }
+-                inf.rvLatest = rvOf(ev.Object)
+-            case "MODIFIED":
+-                old, _ := inf.cache.Get(key(ev.Object))
+-                inf.cache.Update(ev.Object)
+-                for _, h := range inf.handlers { h.OnUpdate(old, ev.Object) }
+-                inf.rvLatest = rvOf(ev.Object)
+-            case "DELETED":
+-                inf.cache.Delete(key(ev.Object))
+-                for _, h := range inf.handlers { h.OnDelete(ev.Object) }
+-                inf.rvLatest = rvOf(ev.Object)
+-            case "ERROR":
+-                // 410 Gone — relist from scratch.
+-                inf.synced = make(chan struct{})
+-                goto relist
+             }
+-        }
+-    relist:
+-        continue
+-    }
+-}
+-```
+-
+-The "ERROR → relist" branch is the entire recovery model. The `cache.Replace(objs)` is *not* destructive in real informers — it computes a diff and emits synthetic events for items that disappeared. Our simplified version replays everything; in `mini-informer` we add a `Replace` that diffs.
++        }()
++        if !waitRetry(ctx) { return }
++    }
++}
++```
++
++The reconnect loop retains the cache while List fails and applies a diff after List succeeds:
++new keys produce OnAdd, changed keys OnUpdate, missing keys OnDelete. Initialize `synced` once;
++close it once after installing the first List and its notifications. `waitRetry` is a bounded retry
++delay selected together with ctx.Done. Cache reads, event callbacks and replacements use copies.
++The simple loop above re-lists after a disconnect; resuming the last applied RV after ordinary EOF
++is an alternative, with 410/invalid events still returning to List. Every old stream is stopped first.
+ 
+ ### 13.2 The Workqueue
+ 
+@@ -1675,6 +1761,8 @@
+     processing  map[string]struct{}   // keys currently being processed
+     delayed     map[string]time.Time  // key → next-eligible time
+     rateLimit   map[string]int        // exponential backoff counter
++    timers      map[string]*time.Timer
++    shutdown    bool
+     mu          sync.Mutex
+     cond        *sync.Cond
+ }
+@@ -1682,6 +1770,13 @@
+ func (q *RateLimitingInterface) Add(key string) {
+     q.mu.Lock()
+     defer q.mu.Unlock()
++    if q.shutdown { return }
++    if timer := q.timers[key]; timer != nil { timer.Stop(); delete(q.timers, key) }
++    delete(q.delayed, key)
++    q.addLocked(key)
++}
++
++func (q *RateLimitingInterface) addLocked(key string) {
+     if _, ok := q.dirty[key]; ok { return } // coalesce
+     if _, ok := q.processing[key]; ok {
+         q.dirty[key] = struct{}{}
+@@ -1694,17 +1789,34 @@
+ 
+ func (q *RateLimitingInterface) AddRateLimited(key string) {
+     q.mu.Lock()
+-    q.rateLimit[key]++
+-    delay := time.Duration(min(1<<q.rateLimit[key], 60)) * time.Second
+-    q.delayed[key] = time.Now().Add(delay)
+-    q.mu.Unlock()
+-    // A background goroutine moves delayed keys back into queue when time arrives.
++    defer q.mu.Unlock()
++    if q.shutdown { return }
++    retries := q.rateLimit[key]
++    if retries < 63 { q.rateLimit[key]++ }
++    delay := time.Second
++    for i := 0; i < retries && delay < 60*time.Second; i++ { delay *= 2 }
++    if delay > 60*time.Second { delay = 60*time.Second }
++    deadline := time.Now().Add(delay)
++    if old, ok := q.delayed[key]; ok && !deadline.Before(old) { return }
++    if old := q.timers[key]; old != nil { old.Stop() }
++    q.delayed[key] = deadline
++    var timer *time.Timer
++    timer = time.AfterFunc(delay, func() {
++        q.mu.Lock()
++        defer q.mu.Unlock()
++        if q.shutdown || q.timers[key] != timer { return }
++        delete(q.timers, key)
++        delete(q.delayed, key)
++        q.addLocked(key)
++    })
++    q.timers[key] = timer
+ }
+ 
+ func (q *RateLimitingInterface) Get() (string, bool) {
+     q.mu.Lock()
+     defer q.mu.Unlock()
+-    for len(q.queue) == 0 { q.cond.Wait() }
++    for len(q.queue) == 0 && !q.shutdown { q.cond.Wait() }
++    if q.shutdown { return "", true }
+     key := q.queue[0]
+     q.queue = q.queue[1:]
+     delete(q.dirty, key)
+@@ -1715,7 +1827,7 @@
+ func (q *RateLimitingInterface) Done(key string) {
+     q.mu.Lock()
+     delete(q.processing, key)
+-    if _, ok := q.dirty[key]; ok {
++    if _, ok := q.dirty[key]; ok && !q.shutdown {
+         // Re-enqueue: a new event arrived during processing.
+         q.queue = append(q.queue, key)
+         q.cond.Signal()
+@@ -1726,9 +1838,25 @@
+ func (q *RateLimitingInterface) Forget(key string) {
+     q.mu.Lock(); defer q.mu.Unlock()
+     delete(q.rateLimit, key)
++    if timer := q.timers[key]; timer != nil { timer.Stop(); delete(q.timers, key) }
+     delete(q.delayed, key)
+ }
+-```
++
++func (q *RateLimitingInterface) ShutDown() {
++    q.mu.Lock()
++    defer q.mu.Unlock()
++    q.shutdown = true
++    for key, timer := range q.timers { timer.Stop(); delete(q.timers, key) }
++    clear(q.delayed)
++    q.queue = nil
++    q.cond.Broadcast()
++}
++```
++
++Initialize every map and `q.cond = sync.NewCond(&q.mu)` in the queue constructor. Each worker's
++owner calls ShutDown when ctx is canceled; `Get` returns `quit=true`, matching the worker loops.
++A successful Get always has a Done, including failed reconciles. Canceling a timer also removes
++its identity from the map, so an already-started old callback cannot enqueue a replacement timer's key.
+ 
+ The four invariants:
+ 1. **Coalescing**: if a key is enqueued twice before processing, only one entry exists.
+@@ -1789,7 +1917,8 @@
+     if rs == nil { return nil } // deleted
+ 
+     // 1. Find all pods matching this RS's selector.
+-    allPods, _ := c.podLister.List()
++    allPods, err := c.api.ListPods(rs.Namespace) // committed writes count on the next pass
++    if err != nil { return err }
+     owned := []*Pod{}
+     for _, p := range allPods {
+         if isOwnedBy(p, rs) && labelsMatch(p.Labels, rs.Spec.Selector) {
+@@ -1800,7 +1929,9 @@
+     // 2. Filter out terminating.
+     alive := []*Pod{}
+     for _, p := range owned {
+-        if p.DeletionTimestamp == nil { alive = append(alive, p) }
++        if p.DeletionTimestamp == nil && p.Status.Phase != "Succeeded" && p.Status.Phase != "Failed" {
++            alive = append(alive, p)
++        }
+     }
+ 
+     // 3. Diff against desired.
+@@ -1826,12 +1957,22 @@
+     }
+ 
+     // 4. Update RS status.
+-    rs.Status.Replicas = int32(len(owned))
+-    rs.Status.ReadyReplicas = countReady(owned)
+-    rs.Status.AvailableReplicas = countAvailable(owned)
+-    return c.api.UpdateReplicaSetStatus(rs)
+-}
+-```
++    observed, err := c.api.ListOwnedActivePods(rs) // namespace + owner UID + selector
++    if err != nil { return err }
++    next := rs.DeepCopy()
++    next.Status.Replicas = int32(len(observed))
++    next.Status.ReadyReplicas = countReady(observed)
++    next.Status.AvailableReplicas = countAvailable(observed)
++    if statusEqual(rs.Status, next.Status) { return nil }
++    return c.api.UpdateReplicaSetStatus(next)
++}
++```
++
++Validate template labels against the selector at the API. `isOwnedBy` compares kind/name/UID and
++namespace; template materialization copies the template and assigns fresh identity. Use stable
++owner-UID/slot names for create retries with uncertain responses, or an expectations ledger when
++reading from cache. Observe committed creations before deciding how many more to create. A status
++write uses RV and skips unchanged state. Pod updates enqueue both old and new owners.
+ 
+ Read this carefully. Every line maps to a real K8s concept:
+ 
+@@ -1877,10 +2018,15 @@
+     }
+     if newRS == nil {
+         newRS = buildRS(dep, templateHash)
+-        newRS, _ = c.api.CreateRS(newRS)
+-    }
+-
+-    // 2. Compute the rolling step.
++        var err error
++        newRS, err = c.api.CreateRS(newRS)
++        if err != nil { return err }
++    }
++
++    // 2. Wait for RS observations to catch up before the next rolling step.
++    for _, rs := range append(append([]*ReplicaSet(nil), oldRSs...), newRS) {
++        if rs.Status.Replicas != rs.Spec.Replicas { return nil }
++    }
+     desired := dep.Spec.Replicas
+     maxSurge := computeMaxSurge(dep)
+     maxUnavailable := computeMaxUnavailable(dep)
+@@ -1890,34 +2036,44 @@
+     if newRS.Spec.Replicas < desired {
+         room := desired + maxSurge - totalReplicas(append(oldRSs, newRS))
+         if room > 0 {
+-            newRS.Spec.Replicas += min(room, desired-newRS.Spec.Replicas)
+-            c.api.UpdateRS(newRS)
++            next := newRS.DeepCopy()
++            next.Spec.Replicas += min(room, desired-newRS.Spec.Replicas)
++            return c.api.UpdateRS(next) // errors are retried; cache objects stay unchanged
+         }
+     }
+ 
+     // Scale down old RSs as new becomes ready.
+-    if newRS.Status.ReadyReplicas > 0 && len(oldRSs) > 0 {
++    if len(oldRSs) > 0 { // maxSurge=0 may need an old replica removed first
+         available := currentReady - (desired - maxUnavailable)
+         if available > 0 {
+             for _, old := range oldRSs {
+                 if old.Spec.Replicas > 0 {
+                     reduce := min(available, old.Spec.Replicas)
+-                    old.Spec.Replicas -= reduce
+-                    c.api.UpdateRS(old)
+-                    available -= reduce
+-                    if available == 0 { break }
++                    next := old.DeepCopy()
++                    next.Spec.Replicas -= reduce
++                    return c.api.UpdateRS(next)
+                 }
+             }
+         }
+     }
+ 
+     // 3. Update Deployment status.
+-    dep.Status.Replicas = totalReplicas(append(oldRSs, newRS))
+-    dep.Status.ReadyReplicas = currentReady
+-    dep.Status.UpdatedReplicas = newRS.Status.ReadyReplicas
+-    return c.api.UpdateDeploymentStatus(dep)
+-}
+-```
++    next := dep.DeepCopy()
++    next.Status.Replicas = observedReplicas(append(oldRSs, newRS))
++    next.Status.ReadyReplicas = currentReady
++    next.Status.UpdatedReplicas = newRS.Status.Replicas
++    if statusEqual(dep.Status, next.Status) { return nil }
++    return c.api.UpdateDeploymentStatus(next)
++}
++```
++
++The update helpers use RV and propagate errors. Surge percentages round up, unavailable
++percentages round down and are capped at desired replicas; for a nonzero desired count, reject
++parameters that resolve to both zero. `UpdatedReplicas` counts observed replicas of the current
++template, whether Ready or not. Waiting for the next RS event after one write keeps the budget
++calculation tied to observed state. Unready old replicas can be reclaimed without spending the
++ready budget. The [deployment contract](../docs/contracts/deployment-endpoints.md) includes the
++zero-surge and status cases checked during implementation.
+ 
+ This is chapter 12 §deployments distilled. The real Deployment controller has more edge cases (paused rollouts, progress deadlines, history revisions, automatic rollback) but the spine is this 30-line loop.
+ 
+@@ -1925,24 +2081,27 @@
+ 
+ ```go
+ func (c *EndpointsController) reconcile(svcKey string) error {
+-    svc, _ := c.svcLister.Get(svcKey)
++    ns, name := splitKey(svcKey)
++    svc, err := c.svcLister.Get(svcKey)
++    if err != nil && !isNotFound(err) { return err }
+     if svc == nil {
+-        // Service deleted — delete corresponding Endpoints.
+-        return c.api.DeleteEndpoints(svc.Namespace, svc.Name)
++        // Service deleted — retain the key even though the object is absent.
++        return c.api.DeleteOwnedEndpoints(ns, name)
+     }
+     pods := c.podLister.ListMatching(svc.Spec.Selector, svc.Namespace)
+-    subsets := []EndpointSubset{}
++    groups := map[EndpointPort][]EndpointAddress{}
+     for _, port := range svc.Spec.Ports {
+-        addresses := []EndpointAddress{}
+         for _, p := range pods {
+-            if !isReady(p) { continue }
+-            addresses = append(addresses, EndpointAddress{IP: p.Status.PodIP, NodeName: &p.Spec.NodeName})
++            if !isReady(p) || net.ParseIP(p.Status.PodIP) == nil { continue }
++            target, ok := resolveTargetPort(p, port) // omitted -> port; integer -> value; name -> Pod port
++            if !ok { continue }
++            backendPort := EndpointPort{Name: port.Name, Port: target, Protocol: port.Protocol}
++            groups[backendPort] = append(groups[backendPort], EndpointAddress{
++                IP: p.Status.PodIP, NodeName: &p.Spec.NodeName,
++            })
+         }
+-        subsets = append(subsets, EndpointSubset{
+-            Addresses: addresses,
+-            Ports:     []EndpointPort{{Name: port.Name, Port: port.TargetPort}},
+-        })
+-    }
++    }
++    subsets := sortedEndpointSubsets(groups)
+     eps := &Endpoints{
+         Metadata: ObjectMeta{Namespace: svc.Namespace, Name: svc.Name},
+         Subsets:  subsets,
+@@ -1951,7 +2110,13 @@
+ }
+ ```
+ 
+-That's the entire Endpoints controller. Real K8s also has the EndpointSlice controller (chapter 14 §endpointslice) for scalability beyond ~1000 endpoints — same loop, slightly different output shape.
++For each Pod resolve an omitted targetPort to the Service port, an integer to that port, or a
++name to the matching container port/protocol. Group addresses by resolved port; include only Ready
++applications with valid Pod IPs, sort output, and skip unchanged writes. Pod old/new label and Ready
++changes enqueue the affected Service keys. Preserve selectorless/manual Endpoints; automatic
++Endpoints carry the Service UID so same-name replacements can be distinguished.
++
++That is the shape of the Endpoints controller. Real K8s also has the EndpointSlice controller (chapter 14 §endpointslice) for scalability beyond ~1000 endpoints — same loop, slightly different output shape.
+ 
+ ### 13.6 The GC Controller (Optional in `minik8s`)
+ 
+@@ -2000,6 +2165,9 @@
+     "fmt"
+     "net"
+     "os"
++    "crypto/sha256"
++    "errors"
++    "syscall"
+     "github.com/vishvananda/netlink"
+     "github.com/vishvananda/netns"
+ )
+@@ -2019,10 +2187,12 @@
+ 
+ type Result struct {
+     CNIVersion string `json:"cniVersion"`
+-    IPs []struct {
+-        Address string `json:"address"`
+-        Gateway string `json:"gateway"`
+-    } `json:"ips"`
++    IPs []IPConfig `json:"ips"`
++}
++type IPConfig struct {
++    Version string `json:"version"`
++    Address string `json:"address"`
++    Gateway string `json:"gateway"`
+ }
+ 
+ func main() {
+@@ -2032,7 +2202,9 @@
+     switch cmd {
+     case "ADD":  cmdAdd(&cfg)
+     case "DEL":  cmdDel(&cfg)
+-    case "CHECK": os.Exit(0)
++    case "CHECK": must(checkAllocatedInterfaceAddressRoute(&cfg))
++    case "VERSION": emitSupportedVersions("0.4.0")
++    default: failCNI("unsupported CNI_COMMAND")
+     }
+ }
+ 
+@@ -2045,21 +2217,25 @@
+     br, err := netlink.LinkByName(cfg.Bridge)
+     if err != nil {
+         br = &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: cfg.Bridge}}
+-        netlink.LinkAdd(br)
+-        // Assign gateway IP to bridge.
++        if err := netlink.LinkAdd(br); err != nil && !errors.Is(err, syscall.EEXIST) { must(err) }
++        br, err = netlink.LinkByName(cfg.Bridge)
++        must(err)
++        // Assign gateway IP to bridge (AddrReplace also accepts an existing address).
+         gw := firstIP(cfg.IPAM.Subnet)
+-        netlink.AddrAdd(br, &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: subnetMask(cfg.IPAM.Subnet)}})
++        must(netlink.AddrReplace(br, &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: subnetMask(cfg.IPAM.Subnet)}}))
+         netlink.LinkSetUp(br)
+     }
+ 
+     // 2. Allocate IP from file-backed pool.
+-    podIP := allocateIP(cfg.IPAM.StateFile, cfg.IPAM.Subnet, containerID)
++    podIP, err := allocateIP(cfg.IPAM.StateFile, cfg.IPAM.Subnet, containerID)
++    must(err)
+ 
+     // 3. Create veth pair: hostend stays in host ns, podend moves to pod ns.
+-    hostName := "veth" + containerID[:8]
++    sum := sha256.Sum256([]byte(containerID))
++    hostName := fmt.Sprintf("veth%x", sum[:5])
+     veth := &netlink.Veth{
+         LinkAttrs: netlink.LinkAttrs{Name: hostName},
+-        PeerName:  "eth-tmp-" + containerID[:8],
++        PeerName: fmt.Sprintf("peer%x", sum[:5]), // 14 bytes, even for a short ID
+     }
+     netlink.LinkAdd(veth)
+     netlink.LinkSetMaster(veth, br.(*netlink.Bridge))
+@@ -2092,20 +2268,24 @@
+ 
+     // 6. Emit result.
+     res := Result{CNIVersion: cfg.CNIVersion}
+-    res.IPs = []struct{Address, Gateway string}{
+-        {Address: podIP.String() + "/24", Gateway: firstIP(cfg.IPAM.Subnet).String()},
++    prefix, _ := subnetMask(cfg.IPAM.Subnet).Size()
++    res.IPs = []IPConfig{
++        {Version: "4", Address: fmt.Sprintf("%s/%d", podIP, prefix), Gateway: firstIP(cfg.IPAM.Subnet).String()},
+     }
+     json.NewEncoder(os.Stdout).Encode(res)
+ }
+ 
+ func cmdDel(cfg *NetConf) {
+     containerID := os.Getenv("CNI_CONTAINERID")
+-    // 1. Release IP.
+-    releaseIP(cfg.IPAM.StateFile, containerID)
+-    // 2. Delete veth host end (the peer in pod ns dies with the netns).
+-    hostName := "veth" + containerID[:8]
++    // Delete the host veth first. Its peer is removed with it.
++    // Missing namespace/link is allowed for repeated DEL.
++    sum := sha256.Sum256([]byte(containerID))
++    hostName := fmt.Sprintf("veth%x", sum[:5])
+     link, err := netlink.LinkByName(hostName)
+-    if err == nil { netlink.LinkDel(link) }
++    if err == nil { must(netlink.LinkDel(link))
++    } else if !isLinkNotFound(err) { must(err) }
++    // Release only after removal (or confirmed absence), under the IPAM lock.
++    must(releaseIP(cfg.IPAM.StateFile, containerID))
+ }
+ ```
+ 
+@@ -2119,27 +2299,46 @@
+     Allocations map[string]string `json:"allocations"` // containerID → IP
+ }
+ 
+-func allocateIP(stateFile, subnet, containerID string) net.IP {
++func allocateIP(stateFile, subnet, containerID string) (net.IP, error) {
+     lockFile(stateFile)
+     defer unlockFile(stateFile)
+     state := readState(stateFile)
+     if existing, ok := state.Allocations[containerID]; ok {
+-        return net.ParseIP(existing) // idempotent
+-    }
+-    cidr, _ := net.ParseCIDR(subnet)
+-    for ip := nextIP(cidr.IP); cidr.Contains(ip); ip = nextIP(ip) {
+-        if ip.Equal(firstIP(subnet)) { continue } // skip gateway
++        return net.ParseIP(existing), nil // validate saved entries when reading state
++    }
++    _, cidr, err := net.ParseCIDR(subnet)
++    if err != nil || cidr.IP.To4() == nil { return nil, fmt.Errorf("invalid IPv4 subnet") }
++    ones, bits := cidr.Mask.Size()
++    if bits != 32 || ones < 16 || ones > 30 { return nil, fmt.Errorf("expected IPv4 /16 through /30") }
++    broadcast := append(net.IP(nil), cidr.IP.To4()...)
++    for i := range broadcast { broadcast[i] |= ^cidr.Mask[i] }
++    gateway := firstIP(subnet) // network + 1, reserved consistently by bridge and IPAM
++    for ip := nextIP(gateway); cidr.Contains(ip) && !ip.Equal(broadcast); ip = nextIP(ip) {
+         if !inUse(state, ip) {
+             state.Allocations[containerID] = ip.String()
+-            writeState(stateFile, state)
+-            return ip
++            if err := writeState(stateFile, state); err != nil { return nil, err }
++            return ip, nil
+         }
+     }
+-    panic("ip pool exhausted")
+-}
+-```
+-
+-Twenty lines. Cross-node IPAM in real CNI plugins is harder (you need a node-aware partitioner so two nodes don't allocate the same IP); that's what Calico's IPAM controller or Cilium's IP pool CRD do (chapters 15, 16). For `minik8s` single-node, the file is the source of truth.
++    return nil, fmt.Errorf("IP pool exhausted")
++}
++```
++
++The omitted helpers matter here: `firstIP` returns network+1; `nextIP` copies before incrementing;
++state reads validate address range/uniqueness, and state writes sync a temporary file before rename.
++Check every netlink/namespace operation, close namespace handles, and restore the caller's namespace.
++An existing complete ADD returns the same allocation; partial failure removes the new veth before
++releasing its address. Hold the state lock through allocation and network setup, using a lock-held
++allocation helper, so concurrent ADD/DEL cannot release an address still in use. CHECK compares
++allocation, interface state, bridge membership, address/prefix and default route; repeated DEL
++succeeds when the namespace or link has already disappeared. Errors produce CNI error JSON and a
++nonzero exit. These helpers are part of the plugin implementation.
++
++For immediate IP reuse after traffic, preserve the IP-to-MAC identity or refresh old ARP mappings.
++The tested implementation derives a local unicast MAC from the IPv4 address for Pod and gateway;
++[the network contract](../docs/contracts/network-proxy.md) records this and the ADD/DEL/CHECK experiments.
++
++Cross-node IPAM in real CNI plugins is harder (you need a node-aware partitioner so two nodes don't allocate the same IP); that's what Calico's IPAM controller or Cilium's IP pool CRD do (chapters 15, 16). For `minik8s` single-node, the file is the source of truth.
+ 
+ ### 14.4 Cross-Node Connectivity
+ 
+@@ -2198,6 +2397,11 @@
+    -t nat -A PREROUTING -j KUBE-SERVICES
+    -t nat -A OUTPUT     -j KUBE-SERVICES
+ ```
++
++For this path the node enables IPv4 forwarding and bridge netfilter. Enable hairpin on each
++host veth bridge port. Mark Service traffic (for example 0x4000) and MASQUERADE that mark in
++POSTROUTING so a Pod can reach itself through a VIP. Install the marking rule before each Service
++jump. The node runs the proxy's owned chains; preserve unrelated chains during updates and cleanup.
+ 
+ ### 15.2 The Reconcile
+ 
+@@ -2211,8 +2415,10 @@
+ }
+ 
+ func (p *Proxy) reconcile() error {
+-    services, _ := p.svcInformer.List()
+-    endpoints, _ := p.epsInformer.List()
++    services, err := p.svcInformer.List()
++    if err != nil { return err }
++    endpoints, err := p.epsInformer.List()
++    if err != nil { return err }
+     epsByName := indexByName(endpoints)
+ 
+     // 1. Build the desired rule set in memory.
+@@ -2220,66 +2426,86 @@
+     rules = append(rules, "*nat")
+     rules = append(rules, ":KUBE-SERVICES - [0:0]")
+     for _, svc := range services {
+-        svcChain := "KUBE-SVC-" + hash(svc.Namespace+"/"+svc.Name)
+-        rules = append(rules, ":"+svcChain+" - [0:0]")
+         ep := epsByName[svc.Namespace+"/"+svc.Name]
+-        if ep == nil || len(allAddrs(ep)) == 0 {
+-            // No endpoints — reject with REJECT or just no rule.
+-            continue
+-        }
+-        // KUBE-SERVICES → svc chain.
+         for _, port := range svc.Spec.Ports {
+-            rules = append(rules, fmt.Sprintf(
+-                "-A KUBE-SERVICES -d %s/32 -p %s --dport %d -j %s",
+-                svc.Spec.ClusterIP, port.Protocol, port.Port, svcChain))
+-        }
+-        // SEP chains.
+-        addrs := allAddrs(ep)
+-        for i, addr := range addrs {
+-            sepChain := "KUBE-SEP-" + hash(svc.Namespace+"/"+svc.Name+"/"+addr.IP)
+-            rules = append(rules, ":"+sepChain+" - [0:0]")
+-            prob := 1.0 / float64(len(addrs)-i)
+-            if i < len(addrs)-1 {
++            // A chain key includes the service port/protocol and each resolved target port.
++            serviceKey := fmt.Sprintf("%s/%s/%s/%d", svc.Namespace, svc.Name, port.Protocol, port.Port)
++            svcChain := ownedChainName("KUBE-SVC-", serviceKey)
++            rules = append(rules, ":"+svcChain+" - [0:0]")
++            addrs := readyEndpointsForPort(ep, port)
++            if len(addrs) == 0 { continue }
++            match := fmt.Sprintf("-A KUBE-SERVICES -d %s/32 -p %s --dport %d",
++                svc.Spec.ClusterIP, strings.ToLower(port.Protocol), port.Port)
++            rules = append(rules, match+" -j MARK --or-mark 0x4000")
++            rules = append(rules, match+" -j "+svcChain)
++            for i, addr := range addrs {
++                endpointKey := fmt.Sprintf("%s/%s/%d", serviceKey, addr.IP, addr.Port)
++                sepChain := ownedChainName("KUBE-SEP-", endpointKey)
++                rules = append(rules, ":"+sepChain+" - [0:0]")
++                prob := 1.0 / float64(len(addrs)-i)
++                if i < len(addrs)-1 {
++                    rules = append(rules, fmt.Sprintf(
++                        "-A %s -m statistic --mode random --probability %.10f -j %s", svcChain, prob, sepChain))
++                } else { rules = append(rules, fmt.Sprintf("-A %s -j %s", svcChain, sepChain)) }
+                 rules = append(rules, fmt.Sprintf(
+-                    "-A %s -m statistic --mode random --probability %f -j %s",
+-                    svcChain, prob, sepChain))
+-            } else {
+-                rules = append(rules, fmt.Sprintf("-A %s -j %s", svcChain, sepChain))
+-            }
+-            for _, port := range svc.Spec.Ports {
+-                rules = append(rules, fmt.Sprintf(
+-                    "-A %s -p %s -j DNAT --to-destination %s:%d",
+-                    sepChain, port.Protocol, addr.IP, port.TargetPort))
++                    "-A %s -p %s --dport %d -j DNAT --to-destination %s:%d",
++                    sepChain, strings.ToLower(port.Protocol), port.Port, addr.IP, addr.Port))
+             }
+         }
+     }
++    // Prepend owned chain declarations/flushes, append obsolete-chain deletion and
++    // the mark-based POSTROUTING MASQUERADE rules before COMMIT. Preserve foreign chains.
++    rules = completeOwnedChainLifecycle(rules)
+     rules = append(rules, "COMMIT")
+ 
+     // 2. Atomically replace via iptables-restore.
+-    return exec.Command("iptables-restore", "--noflush").Run().WithStdin(strings.Join(rules, "\n"))
++    cmd := exec.Command("iptables-restore", "--noflush")
++    cmd.Stdin = strings.NewReader(strings.Join(rules, "\n") + "\n")
++    return cmd.Run()
+ }
+ 
+ func (p *Proxy) Run(ctx context.Context) {
+-    // Set up KUBE-SERVICES hook from PREROUTING and OUTPUT (one-time).
+-    exec.Command("iptables", "-t", "nat", "-A", "PREROUTING", "-j", "KUBE-SERVICES").Run()
+-    exec.Command("iptables", "-t", "nat", "-A", "OUTPUT", "-j", "KUBE-SERVICES").Run()
+-
+-    // Watch + enqueue.
++    // Watch + enqueue. Install hooks only after the target chains exist.
+     p.svcInformer.AddEventHandler(...)
+     p.epsInformer.AddEventHandler(...)
+     go p.svcInformer.Run(ctx)
+     go p.epsInformer.Run(ctx)
+-
++    if !waitForSync(ctx, p.svcInformer, p.epsInformer) { return }
++    // ensureHooks creates/checks owned root chains and the three hooks; propagate errors.
++    if err := p.ensureHooks(); err != nil { p.reportError(err); return }
++    defer p.removeOwnedHooksAndChains()
++    go func() { <-ctx.Done(); p.queue.ShutDown() }()
++    p.queue.Add("reconcile")
+     for {
+         _, quit := p.queue.Get()
+         if quit { return }
+         if err := p.reconcile(); err != nil {
+             p.queue.AddRateLimited("reconcile")
+-        }
++        } else { p.queue.Forget("reconcile") }
+         p.queue.Done("reconcile")
+     }
+ }
+ ```
++
++`readyEndpointsForPort` selects the resolved Ready endpoint group by port name/protocol;
++`ownedChainName` uses bounded hex names (within 28 characters), records full-key ownership,
++and resolves hash collisions rather than merging unrelated chains.
++
++`completeOwnedChainLifecycle` emits declarations for owned chains, flushes their previous rules, then installs the new
++rules; flush/delete obsolete Service/endpoint chains after their references are removed. Include
++the mark/MASQUERADE chain. Install PREROUTING/OUTPUT/POSTROUTING hooks only after their targets
++exist, check every command, and make hook installation/restart idempotent. Read failures retain the
++last installed rules; commit bookkeeping only after restore succeeds. Normal exit removes owned
++hooks/chains. Full [rule/cleanup behavior and experiments](../docs/contracts/network-proxy.md) are
++available separately.
++
++VIP allocation has one writer: rebuild occupied addresses from API Services, reserve network
++and broadcast, select a free VIP, and write it through RV CAS. Other node proxies observe assigned
++VIPs. An object CAS alone does not coordinate two independent allocators choosing one address.
++
++Rule changes affect new connections; existing conntrack entries can continue using an old backend.
++This MVP checks eventual new-connection traffic after endpoint changes. Conntrack cleanup and
++connection draining are further work; record request failures during the transition.
+ 
+ The pattern: on any Service or Endpoints change, enqueue a single "reconcile" key. The reconcile rebuilds the *entire* iptables ruleset from scratch and atomically swaps. This is exactly what `kube-proxy` in iptables mode does — chapter 14 §iptables-mode.
+ 
+@@ -2444,17 +2670,19 @@
+ 
+ ## 18. End-to-End Demo: From `curl -X POST` to Running Container
+ 
+-Let us trace what happens when, on a single Linux box, we bring up all of `minik8s` and ask it to run an nginx pod.
++Let us trace what happens when, in a disposable Linux VM, we bring up `minik8s` and ask it to run
++an nginx pod. This is an illustrative sequence, including proposed commands and sample timestamps.
++The runnable reference commands and measured results are in [the integration experiments](../docs/progress/ALIGNMENT.md).
++They include real image pull, Pod/Service traffic and cleanup.
+ 
+ ### 18.1 The Boot Sequence
+ 
+ ```
+-   Terminal 1:
+-     $ ./minikv --listen :2379 --snapshot /var/lib/minikv/snapshot
+-     [minikv] listening on :2379, revision=0
++   Storage:
++     minikv is a library owned by mini-apiserver, not a separate server.
+ 
+    Terminal 2:
+-     $ ./mini-apiserver --kv localhost:2379 --listen :8080
++     $ ./mini-apiserver --data /var/lib/minik8s/store.wal --listen :8080
+      [apiserver] handlers registered: pods, nodes, services, endpoints,
+                                       deployments, replicasets, bindings
+      [apiserver] listening on :8080
+@@ -2619,7 +2847,8 @@
+ 5. Packet routed back through `cni0` → veth → pod netns of nginx pod 1.
+ 6. SYN-ACK returns; reverse-DNAT applied by conntrack.
+ 
+-That is your full cluster, running, end to end, with every line of code in this chapter.
++That is the intended end-to-end path. Implement the omitted helpers and run the linked experiments
++to check the actual processes, packets and cleanup.
+ 
+ ```
+                          END-TO-END DATA PATH
+@@ -2631,7 +2860,7 @@
+         socket  → kernel netns of pod
+                 │  veth1 ───► cni0 bridge (host ns)
+                 ▼
+-         OUTPUT (nat) chain
++         PREROUTING (nat)
+                 │  KUBE-SERVICES → KUBE-SVC-abc → KUBE-SEP-ep1
+                 │  DNAT to 10.244.0.2:80
+                 ▼
+@@ -3061,7 +3290,7 @@
+ 3. **Find an issue tagged `good first issue`** in `kubernetes/kubernetes`. There are usually 50–100 open.
+ 4. **Read the contributor guide**: `kubernetes/community/contributors/guide/`. Especially the bit on `release-notes-required` labels and `kind/*` labels.
+ 5. **Build kubernetes locally**: `git clone kubernetes/kubernetes; make`. The first build takes ~30 minutes. Subsequent incremental builds are seconds.
+-6. **Run an E2E test against a kind cluster**: `kind create cluster; export KUBECONFIG=$(kind get kubeconfig-path); make WHAT=test/e2e/e2e.test; ./_output/bin/e2e.test --kubeconfig=$KUBECONFIG --ginkgo.focus="<your-area>"`.
++6. **Run an E2E test against a kind cluster**: `kind create cluster; export KUBECONFIG=$(mktemp); kind get kubeconfig > "$KUBECONFIG"; make WHAT=test/e2e/e2e.test; ./_output/bin/e2e.test --kubeconfig=$KUBECONFIG --ginkgo.focus="<your-area>"`.
+ 7. **Make a small PR**. Documentation typo, e2e test improvement, validation message clarification — anything that gets you through the review pipeline once.
+ 8. **Iterate**. After 5–10 small PRs you'll have a sense of the codebase rhythm.
+ 9. **Pick a bigger thing**. Work with your SIG to scope it. If it's significant, write a KEP.

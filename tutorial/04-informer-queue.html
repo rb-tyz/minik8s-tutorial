@@ -1,0 +1,190 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>04 Informer 与队列：把变化通知变成一次现状检查 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="04-informer-与队列把变化通知变成一次现状检查">04 Informer 与队列：把变化通知变成一次现状检查</h1>
+<p>模块：<strong>基础层 Core / 控制循环支撑</strong>。依赖 02–03；原文 §13.1–13.2。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>实现线程安全的 List/Watch 缓存，以及按 key 去重、失败退避的工作队列。后面的 scheduler
+和控制器复用它们；本模块不需要启动容器。</p>
+<p>前置知识是 map/mutex、goroutine/channel、context、上一章的 RV 和重连语义。先写一个资源
+集合和一个 worker，再检查多个生产者、不同 key 与关闭行为。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>Informer 回答“我目前知道哪些对象”，Queue 回答“哪些 key 还需要检查”。连续十次更新
+通常可以合并为一次当前状态检查；控制器依据当前对象计算动作，重复事件便能安全处理。</p>
+<pre><code class="language-text">List/Watch -&gt; 缓存更新 -&gt; 回调 Add(namespace/name)
+                                    |
+                               worker Get -&gt; reconcile -&gt; Done
+</code></pre>
+<p>这就是事件触发、按状态收敛的控制模式。事件可能重复，缓存也可能落后；最终写入仍依靠
+API 的 UID/RV 条件保护。</p>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>设施</th>
+<th>操作与含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Informer</td>
+<td>Run(ctx)、WaitForSync(ctx)、Get(key)、List()、ResourceVersion()</td>
+</tr>
+<tr>
+<td>通知</td>
+<td>ADDED(nil,new)、MODIFIED(old,new)、DELETED(old,nil)</td>
+</tr>
+<tr>
+<td>Queue</td>
+<td>Add、Get(ctx)、Done、AddAfter、AddRateLimited、Forget、ShutDown</td>
+</tr>
+</tbody>
+</table></div>
+<p>Get/List/通知都交付副本。回调发生在缓存更新后、锁外，允许查询缓存，应快速入队而不做
+耗时 HTTP 写入。WaitForSync 表示首次 List 已安装且初始化通知完成；连接健康由错误回调观察。</p>
+<p>namespaced key 用 namespace/name，Node 用 name。key 不包含 UID，处理时重新读取当前
+对象以识别同名重建。完整行为见 <a href="../docs/contracts/informer-queue.html">Informer/Queue 契约</a>。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="缓存与游标">缓存与游标</h3>
+<p>维护 <code>map[key]Object</code>、已应用 RV、首次同步信号和锁：</p>
+<ol>
+<li>List 得到集合和 snapshot RV，校验 item 版本与作用域。</li>
+<li>在锁内替换集合、更新游标，锁外发初始化/差异通知。</li>
+<li>从 list RV 开 Exact Watch。</li>
+<li>校验每帧后，在一个锁范围内更新对象和游标，再锁外回调。</li>
+<li>BOOKMARK 只更新游标；重复或更旧事件忽略。</li>
+</ol>
+<p>同 key 的 UID 变了时，先通知旧对象删除，再通知新对象添加。否则父控制器可能把新旧实例
+混为一次修改，错误清理或漏掉旧归属。</p>
+<h3 id="重新-list-的差异">重新 List 的差异</h3>
+<p>设旧缓存有 a/b，断线后 List 得到 b/c。先原子安装 b/c，再通知删除 a、添加 c；b 的 UID
+相同但 RV 变化则通知修改。UID/RV 都没变的对象不必重复通知。List 失败时保留旧集合重试。</p>
+<h3 id="队列的三个集合">队列的三个集合</h3>
+<p>维护 ready 顺序表、dirty 集合和 processing 集合：</p>
+<pre><code class="language-text">Add(k):  已 dirty 就合并；否则标 dirty，未 processing 则进 ready
+Get():   从 ready 取 k，清 dirty，加入 processing
+Done(k): 移出 processing；若处理时又变 dirty，再进 ready
+</code></pre>
+<p>例子：Add(a) 两次只得到一次 Get(a)；处理 a 时再 Add(a) 三次，不立刻交给第二个 worker；
+Done(a) 后提供一次补查。这里保存的是“还需检查”的事实，不是每个事件的历史。</p>
+<p>延迟任务另有 key→deadline/timer、重试次数。相同 key 延迟请求取最早期限；立即 Add
+替换延迟。Forget 清重试计数并取消未执行的延迟请求。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>普通 EOF 从最后已应用 RV 续接；410、慢消费者 503 或非法事件等情况重新 List 并做差异通知。
+停止一条旧 Watch 时调用 Stop 并等待读流退出，避免重连次数越多协程越多。</p>
+<p>每次成功 Get 都对应一次 Done，失败也需要 Done。否则 key 会一直留在 processing。
+失败安排指数退避，成功 Forget：参考延迟从 100ms 倍增到 30s，错误不阻塞其他 key。</p>
+<pre><code class="language-text">Get -&gt; reconcile
+  成功: Forget
+  失败: AddRateLimited
+Done
+</code></pre>
+<p>Get 的等待、重连等待和定时器都要响应取消。ShutDown 丢弃等待项、取消定时器并唤醒 worker；
+已经领取的任务由 worker 的 context 管理。API 的失败读取不能被当成“所有对象已删除”。</p>
+<p>JSON 无法解码时结束当前连接，从已应用 RV 重连；能解码但违反事件结构/版本约束的帧
+触发重新 List。每次连接都应 Stop 并等待读流退出，避免重连时残留协程。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>本课程没有完整 client-go 体系、共享工厂或多种二级索引。原文的 indexer 是可选项，这里
+先按 key 存储、按需线性筛选。队列/缓存只在进程内，重启从 API 重建。</p>
+<p>一个 key 的串行处理并不把多个对象写入变成事务；cache 的线程安全也不保证其内容是此刻
+API 的最新状态。控制器仍需重读、复制对象并处理 409。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>任务</th>
+<th>完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1 纯缓存</td>
+<td>Replace/Get/List、深拷贝、稳定排序</td>
+<td>调用方改副本不影响缓存</td>
+</tr>
+<tr>
+<td>C2 List/Watch</td>
+<td>初始化、游标、事件与重连</td>
+<td>间隙写入不丢，断线后恢复</td>
+</tr>
+<tr>
+<td>C3 差异通知</td>
+<td>删除、更新、同名换 UID</td>
+<td>回调看见已安装的新集合</td>
+</tr>
+<tr>
+<td>Q1 即时队列</td>
+<td>ready/dirty/processing</td>
+<td>重复 Add 合并，处理中的 Add 补查一次</td>
+</tr>
+<tr>
+<td>Q2 重试与退出</td>
+<td>定时、退避、Forget、context/Shutdown</td>
+<td>无并发同 key，无遗留定时器/等待者</td>
+</tr>
+</tbody>
+</table></div>
+<p>缓存可先用可控事件源测试，再接真实 HTTP 服务。队列先验证状态序列，再加入 timer。
+以后多个控制器都使用这组不变量，避免各自维护不一致的重试规则。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>参考检查在仓库根目录执行：</p>
+<pre><code class="language-bash">(cd reference &amp;&amp; go test -race -count=1 ./internal/informer ./internal/workqueue)
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>输入与实验</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List 与 Watch 建立间写入</td>
+<td>缓存最终包含写入值</td>
+</tr>
+<tr>
+<td>正常 EOF 后继续写入</td>
+<td>从已应用 RV 续接</td>
+</tr>
+<tr>
+<td>断线时删除 a，再重新 List</td>
+<td>缓存无 a，并收到删除通知</td>
+</tr>
+<tr>
+<td>同名对象换 UID</td>
+<td>旧删除先于新添加</td>
+</tr>
+<tr>
+<td>回调中 Get/List</td>
+<td>不死锁，读到更新后的副本</td>
+</tr>
+<tr>
+<td>Add(a)×2，Get(a)，Add(a)×3，Done</td>
+<td>首次和一次补查，共两次领取</td>
+</tr>
+<tr>
+<td>两个 worker 等待同一 key</td>
+<td>同一时刻最多一个持有该 key</td>
+</tr>
+<tr>
+<td>一次失败后成功</td>
+<td>失败次数清零，旧 timer 被取消</td>
+</tr>
+<tr>
+<td>Get/Watch 等待时取消</td>
+<td>goroutine、连接与 timer 退出</td>
+</tr>
+</tbody>
+</table></div>
+<p>HTTP 反例、真实 Compact、503 与退出记录见 <a href="../docs/progress/C01-S01.html">C01/S01</a>。
+自己的实现可用相同输入/预期编写测试，不必保持参考包名或私有 timer 结构。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>在缓存锁内回调，而回调又 Get，会自锁。每次重连都 close 同一个 synced channel，会 panic。
+忽略重新 List 的删除通知，会让控制器永远保留断线期间消失的对象。</p>
+<p>为一个 key 记录 Add→Get→Done 与 dirty/processing 变化；为一条连接记录 list RV、最后应用
+RV、断线原因和 Stop 结果。用日志检查是否确实关闭旧读循环，再排查服务端事件。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §13.1–13.2；INFORMER、QUEUE 类订正。</li>
+<li><a href="../docs/contracts/informer-queue.html">公开契约</a> 包含延迟合并、同步与错误恢复细则。</li>
+<li>基础层到此可以支持控制循环。下一模块是 <a href="05-scheduler.html">05 Scheduler</a>；
+  Endpoints 控制器也可在具备 Service/Pod API 后独立练习，见 08。</li>
+</ul></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

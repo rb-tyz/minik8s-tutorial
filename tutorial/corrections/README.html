@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>原教程订正记录 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="原教程订正记录">原教程订正记录</h1>
+<p>正文见 <a href="../minik8s-corrected.html">原教程订正版</a>。以仓库保存的原文为底稿，保留 24 节和原有
+叙述顺序，只改技术错误，并在省略实现的地方补充必要说明。原文语言保持英文。</p>
+<p><a href="original-to-corrected.patch">逐行差异</a> 可以查看具体改动；<a href="changes.json">changes.json</a>
+记录修改前后片段与审计 ID。<a href="../../audit/evidence/research/source-tutorial.html">原文底稿</a>
+保持不变，固定提交为 <code>506abffc121e7ad98cdc8f310a9f0a8db69d0843</code>。</p>
+<p>主要订正位于原文 §6–15：cgroup/namespace 顺序、退出状态、KV Watch 的游标与取消、
+API 版本投影和子资源、init/重启、调度用量、Informer 与队列、副本观察、滚动更新、
+CNI 地址/接口、Service 端口与规则。§18 的演示标为设计推演，真实执行记录另行链接；
+§24 的 kind 命令改用现有 kubeconfig 输出方式。</p>
+<p>58 条“原文错误”均在差异记录中有对应处理。实现缺口补充接口或辅助函数职责；设计取舍
+保留条件说明；七条已撤回记录不按旧建议修改。PROXY-008 的处理为公布 conntrack 的现有
+连接行为与 MVP 范围，连接排空留待扩展。具体分类沿用 <a href="../../audit/ERRORS.html">审计清单</a>。</p>
+<p>检查订正版和差异，并执行从正文提取的 KV、队列、IPAM 代码：</p>
+<pre><code class="language-bash">python3 tutorial/corrections/verify.py --output /tmp/opencode/tutorial-corrections-new
+</code></pre>
+<p>输出包含真实 Go 测试日志、实际提取的代码和测试。IPAM 的文件读写由内存夹具提供，此处
+检查地址算法；持久化、真实容器、CNI 和转发沿用对应章节链接的已有运行记录。
+需要 Go 1.23+、Python 3 与 patch，普通用户即可运行。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 9：连接两个 Pod 的网络 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-9连接两个-pod-的网络">小节 9：连接两个 Pod 的网络</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>在本小节，你要实现一个 CNI 插件，为 Pod 分配 IPv4 地址，连接网络接口并配置路由，
+让同一节点上的两个网络 namespace 能够通信。对应教程第 14 节。</p>
+<h2 id="一个-pod-的接口怎样接到另一个-pod">一个 Pod 的接口怎样接到另一个 Pod？</h2>
+<p>每个 Pod 有自己的网络 namespace。可以用一对 veth 连接它与节点：一端放进 Pod，
+作为 eth0；另一端接到节点的 bridge。给 Pod 端配置地址和路由后，数据就能经 bridge 到达其他 Pod。</p>
+<pre><code class="language-text">Pod A eth0 ── veth ── bridge ── veth ── Pod B eth0
+</code></pre>
+<p>CNI 通过环境变量提供容器 ID、namespace 路径和操作类型，通过 stdin 提供 JSON 配置。
+你的插件执行操作后，把结果 JSON 写到 stdout；诊断日志写到 stderr。</p>
+<h2 id="地址分配也有生命周期">地址分配也有生命周期</h2>
+<p>IPAM 负责分配和释放地址。同一个容器重复 ADD 时，应能取得原有分配；地址用完时返回错误，
+释放后允许其他容器使用。</p>
+<p>例如测试使用一个 /30 子网：网络地址和广播地址不可分配，另一个地址留给网关，只剩一个
+Pod 地址。这样只需两个容器 ID，就能检查地址耗尽、重复调用与释放复用。</p>
+<h2 id="addcheck-和-del">ADD、CHECK 和 DEL</h2>
+<p>ADD 建立连接，CHECK 检查已有连接是否仍符合配置，DEL 回收连接和地址。
+CHECK 需要观察实际接口与路由；如果默认路由被删掉，应当发现问题。</p>
+<p>DEL 还会遇到 Pod namespace 已经消失的情况。这时继续释放本次分配，重复执行 DEL 也应成功。
+具体调用约定见 <a href="../../docs/ADAPTER.html#cni-%E5%92%8C%E6%B5%8B%E8%AF%95%E4%BE%9D%E8%B5%96">CNI 接口</a>。</p>
+<h2 id="测试如何运行">测试如何运行</h2>
+<p>测试器在隔离 KVM 中创建本次专用的 namespace、子网与 bridge：</p>
+<ul>
+<li><code>CNI-IPAM</code>：地址耗尽、重复 ADD、释放复用及接口回收。</li>
+<li><code>CNI-CHECK</code>：完整网络通过，删除默认路由后失败。</li>
+<li><code>CNI-DEL</code>：namespace 已消失和重复删除的情况。</li>
+<li><code>CNI-TRAFFIC</code>：一个 namespace 中启动 HTTP 程序，从另一个 namespace 实际访问。</li>
+</ul>
+<h2 id="提示">提示</h2>
+<p>先接通一对 namespace，逐项核对地址、接口状态与路由，再加入地址记录和重复调用处理。
+可以先记录某个容器 ID 对应的地址，失败时按已经完成的步骤回收资源。</p>
+<p>原文第 14.4 节的双节点静态路由实验作为补充，使用已有的 cross-node 测试入口，见
+<a href="../../README.html#%E5%8F%8C%E8%8A%82%E7%82%B9">双节点说明</a>。</p>
+<h2 id="按-stage-提交">按 stage 提交</h2>
+<p>本小节分为 5 个 stage。先查看第一项任务：</p>
+<pre><code class="language-bash">minik8s stage 9.1
+</code></pre>
+<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
+临时练习时指定完整编号，例如：</p>
+<pre><code class="language-bash">minik8s submit --stage 9.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

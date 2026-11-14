@@ -1,0 +1,116 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>工作负载实验：创建、补副本、更新、通信与清理 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="工作负载实验创建补副本更新通信与清理">工作负载实验：创建、补副本、更新、通信与清理</h1>
+<p>对应 06–10 章。运行环境按 <a href="environment.html">环境准备</a> 启动；命令在已批准、已核对 UUID 的
+KVM 中运行，当前位置为 <code>/root/course</code>。这里使用真实节点和 fixture 镜像。API 练习见 core.md。</p>
+<h2 id="共用参数与等待函数">共用参数与等待函数</h2>
+<pre><code class="language-bash">set -euo pipefail
+API=http://127.0.0.1:18880
+NS=course-lab
+CORE="$API/api/v1/namespaces/$NS"
+APPS="$API/apis/apps/v1/namespaces/$NS"
+WORK=$(mktemp -d /tmp/minik8s-course-work.XXXXXX)
+wait_json() {
+  local target=$1 expression=$2 end=$((SECONDS+120))
+  while ((SECONDS&lt;end)); do
+    if curl -fsS --max-time 5 "$target" &gt; "$WORK/observed.json" &amp;&amp; \
+      jq -e "$expression" "$WORK/observed.json" &gt;/dev/null; then return 0; fi
+    sleep 0.2
+  done
+  cat "$WORK/observed.json" &gt;&amp;2
+  return 1
+}
+wait_json "$API/api/v1/nodes" \
+  'any(.items[];.status.conditions[]? | .type=="Ready" and .status=="True")'
+</code></pre>
+<p>等待失败即停止本段，保留 WORK 下最后状态与各终端日志。每次重做更换 namespace；
+失败后也按末节清理。创建请求返回 201，所有 curl 使用 --max-time 防止网络等待无限延长。</p>
+<h2 id="w1一个-pod">W1：一个 Pod</h2>
+<pre><code class="language-bash">curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @tutorial/examples/pod.json "$CORE/pods" &gt; "$WORK/pod-created.json"
+wait_json "$CORE/pods/course-pod" '.spec.nodeName!="" and .status.phase=="Running" and .status.podIP!=""'
+POD_IP=$(jq -r .status.podIP "$WORK/observed.json")
+wait_http() {
+  local target=$1 expected=$2 end=$((SECONDS+120))
+  while ((SECONDS&lt;end)); do
+    if curl -fsS --max-time 3 -H 'Connection: close' "$target" &gt; "$WORK/body" &amp;&amp; \
+      [[ $(cat "$WORK/body") == "$expected" ]]; then return 0; fi
+    sleep 0.2
+  done
+  return 1
+}
+wait_http "http://$POD_IP:8080" version-one
+</code></pre>
+<p>断言分配了节点、Pod Running、实际 HTTP 返回 version-one。记录 container ID 后用 CRI
+inspect 核对实际 state；其他 Pod 配置（init/退出码、hostPath、限额）按 06 章与 CRI 实验
+逐项验证。删除这个独立 Pod 后，RS 不会补它。</p>
+<h2 id="w2副本删除后恢复">W2：副本删除后恢复</h2>
+<pre><code class="language-bash">curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @tutorial/examples/replicaset.json "$APPS/replicasets" &gt; "$WORK/rs-created.json"
+RS_UID=$(jq -r .metadata.uid "$WORK/rs-created.json")
+wait_json "$APPS/replicasets/course-rs" '.status.replicas==2 and .status.readyReplicas==2'
+curl -fsS --max-time 5 "$CORE/pods" &gt; "$WORK/rs-before.json"
+VICTIM=$(jq -r --arg uid "$RS_UID" \
+  '[.items[]|select(any(.metadata.ownerReferences[]?;.uid==$uid))]|sort_by(.metadata.name)|.[0].metadata.name' \
+  "$WORK/rs-before.json")
+curl -fsS --max-time 5 -X DELETE "$CORE/pods/$VICTIM" &gt; "$WORK/rs-deleted.json"
+</code></pre>
+<p>继续轮询 Pod List：owner UID=RS_UID 的 Running Pod 应重新达到两个，且被删除 UID 不在集合中。
+RS status 可能在删除事件前暂时仍是 2，因此断言同时比较实际 Pod 集合。自动检查命令：</p>
+<pre><code class="language-bash">bash grader/grade.sh --url "$API" --case rs --vm-id "$VM_UUID" --output "$WORK/grader-rs"
+</code></pre>
+<p>grader 使用另一个随机 namespace 完成同样操作，保存前后对象并清理自己的资源。</p>
+<h2 id="w3deployment-与-service">W3：Deployment 与 Service</h2>
+<pre><code class="language-bash">curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @tutorial/examples/deployment.json "$APPS/deployments" &gt; "$WORK/deploy-created.json"
+curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+  --data-binary @tutorial/examples/service.json "$CORE/services" &gt; "$WORK/service-created.json"
+wait_json "$APPS/deployments/course-web" \
+  '.status.updatedReplicas==2 and .status.readyReplicas==2 and .status.replicas==2'
+wait_json "$CORE/services/course-web" '.spec.clusterIP!="" and .spec.clusterIP!="None"'
+VIP=$(jq -r .spec.clusterIP "$WORK/observed.json")
+wait_json "$CORE/endpoints/course-web" '[.subsets[]?.addresses[]?]|length==2'
+wait_http "http://$VIP:80" version-one
+</code></pre>
+<p>观察三个不同端口：应用监听 8080，Endpoints 发布 8080，Service 对外是 80。后端集合只含
+同 namespace、selector 匹配、应用 Ready 的两个 Pod，并通过 targetRef.uid 对应实际 Pod。</p>
+<h2 id="w4修改模板并观察滚动">W4：修改模板并观察滚动</h2>
+<pre><code class="language-bash">curl -fsS --max-time 5 "$APPS/deployments/course-web" &gt; "$WORK/deploy-before.json"
+RV=$(jq -r .metadata.resourceVersion "$WORK/deploy-before.json")
+jq -n --arg rv "$RV" \
+  '{metadata:{resourceVersion:$rv},spec:{template:{spec:{containers:[
+    {name:"app",image:"minik8s.local/fixture:n01",command:["/fixture"],args:["http",":8080"],
+     env:[{name:"POD_MARK",value:"version-two"}],ports:[{name:"web",containerPort:8080,protocol:"TCP"}],
+     resources:{cpu:50,memory:67108864}}]}}}}' &gt; "$WORK/roll.json"
+curl -fsS --max-time 5 -X PATCH -H 'Content-Type: application/merge-patch+json' \
+  --data-binary @"$WORK/roll.json" "$APPS/deployments/course-web" &gt; "$WORK/roll-response.json"
+wait_json "$APPS/deployments/course-web" \
+  '.status.updatedReplicas==2 and .status.readyReplicas==2 and .status.replicas==2'
+wait_json "$CORE/pods" \
+  '[.items[]|select(.metadata.labels.app=="course-web")|select(any(.spec.containers[].env[]?; .name=="POD_MARK" and .value=="version-two"))|select(.status.phase=="Running")]|length==2'
+NEW_UIDS=$(jq -c '[.items[]|select(.metadata.labels.app=="course-web")|select(any(.spec.containers[].env[]?; .name=="POD_MARK" and .value=="version-two"))|select(.status.phase=="Running")|.metadata.uid]|sort' "$WORK/observed.json")
+wait_json "$CORE/endpoints/course-web" "([.subsets[]?.addresses[]?.targetRef.uid]|sort)==$NEW_UIDS"
+wait_http "http://$VIP:80" version-two
+</code></pre>
+<p>遇到 409 就重新 GET RV 后生成 patch。数组是整体替换，因此 containers 携带完整应用配置。
+轮询期间保存 RS 的 spec/status、Pod UID 与响应：申请数不超过 N+surge=3，每步就绪预算按
+第 08 章计算。初始旧状态也可能满足相同 status 数字，结束还要确认新版模板的两个 Pod
+Running，Endpoints 的两个 target UID 属于它们，再用多次新连接确认 version-two。</p>
+<p>完整的自动对象与真实请求检查可运行：</p>
+<pre><code class="language-bash">bash grader/grade.sh --url "$API" --case deployment --vm-id "$VM_UUID" --output "$WORK/grader-roll"
+bash grader/grade.sh --url "$API" --case service --vm-id "$VM_UUID" --output "$WORK/grader-service"
+</code></pre>
+<h2 id="w5恢复与回收">W5：恢复与回收</h2>
+<p>分别重启 kubelet、controller-manager、proxy；比较 UID、容器 ID 和 VIP，工作负载应保持并
+收敛。短暂停止 API 时继续访问已安装 VIP；恢复同一 WAL 的 API 后检查控制器续接。
+一次只操作一个组件，保留重启前后对象、进程日志和 HTTP 结果。</p>
+<pre><code class="language-bash">curl -fsS --max-time 5 -X DELETE "$CORE/services/course-web" &gt; "$WORK/service-deleted.json"
+curl -fsS --max-time 5 -X DELETE "$APPS/deployments/course-web" &gt; "$WORK/deploy-deleted.json"
+curl -fsS --max-time 5 -X DELETE "$APPS/replicasets/course-rs" &gt; "$WORK/rs-parent-deleted.json"
+curl -fsS --max-time 5 -X DELETE "$CORE/pods/course-pod" &gt; "$WORK/pod-deleted.json"
+wait_json "$APPS/replicasets" '.items|length==0'
+wait_json "$CORE/pods" '.items|length==0'
+wait_json "$CORE/endpoints" '.items|length==0'
+</code></pre>
+<p>再用 CRI 查询这些 Pod UID 的 sandbox/container 是否消失，检查本次 IPAM 地址释放；
+正常停止 proxy 后确认 M8S 自有规则清除，其他链保留。API 对象消失与运行时回收之间有延迟，
+为两者分别设置期限。本次 guest 已无其他课程资源时，最终 CRI 集合与 IPAM 应为空。
+日志保留在 WORK，完成记录后再删除该目录；最后按环境页停止组件并销毁 VM。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

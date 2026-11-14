@@ -1,0 +1,210 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>02 API：让组件通过带版本的对象协作 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="02-api让组件通过带版本的对象协作">02 API：让组件通过带版本的对象协作</h1>
+<p>模块：<strong>基础层 Core / HTTP API 与客户端</strong>。依赖 01；原文 §9，包含 API 类订正。</p>
+<h2 id="1-学习目标与先决知识">1. 学习目标与先决知识</h2>
+<p>用 Go HTTP/JSON 为 Pod、Node 等对象实现 CRUD、List、Merge PATCH、status 和 binding。
+完成后，组件应能在不读取存储文件的情况下共享状态，并正确处理并发修改。</p>
+<p>需要掌握 HTTP method/status/header、JSON 结构体、路径解析和上一章的 CAS。可以先实现
+Pod/Node，再把相同处理流程扩展到剩余类型。字段定义和完整路由见 <a href="../docs/contracts/api.html">API 契约</a>。</p>
+<h2 id="2-原理与架构位置">2. 原理与架构位置</h2>
+<p>API Server 接收声明并保存对象。scheduler 选择节点，controller 创建或调整对象，kubelet
+观察实际容器，再把结果写回。创建 Pod 的 201 响应表示对象已提交；运行状态由后续组件报告。</p>
+<p>对象由三部分构成：metadata 保存身份与标签，spec 是期望，status 是观察。name 用于查找，
+UID 区分同名的不同创建，resourceVersion（RV）检测读后发生的修改。</p>
+<pre><code class="language-text">调用组件 -&gt; HTTP 路由/解码 -&gt; default/validate -&gt; KV CAS -&gt; JSON 响应
+</code></pre>
+<p>本 MVP 的 namespace 是 URL 中的逻辑分组，无需先创建 Namespace 对象。Node 是全局资源；
+Pod、Service、Endpoints、ReplicaSet、Deployment 在 namespace 内。</p>
+<h2 id="3-公开接口与行为契约">3. 公开接口与行为契约</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>类型</th>
+<th>collection 路径</th>
+<th>item 操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pod</td>
+<td>/api/v1/namespaces/{ns}/pods</td>
+<td>GET/PUT/PATCH/DELETE</td>
+</tr>
+<tr>
+<td>Node</td>
+<td>/api/v1/nodes</td>
+<td>GET/PUT/PATCH/DELETE</td>
+</tr>
+<tr>
+<td>Service / Endpoints</td>
+<td>/api/v1/namespaces/{ns}/services 或 endpoints</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>RS / Deployment</td>
+<td>/apis/apps/v1/namespaces/{ns}/replicasets 或 deployments</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table></div>
+<p>collection 的 POST 创建，GET 列表。<code>/api/v1/pods</code> 等全 namespace collection 只用于 List/Watch。
+成功 create 为 201，其他成功对象操作为 200；404 表示不存在，409 表示冲突，422 表示
+语义校验失败。错误体含 code/reason/message。JSON body 格式错误为 400，过大为 413。</p>
+<p>status 是 item 的子路径，支持 GET/PUT/PATCH；PUT/PATCH 都替换 status。
+binding 只用于 Pod，POST <code>{metadata:{uid,resourceVersion},target:{kind:"Node",name:"node1"}}</code>。
+示例实际请求须写成合法 JSON，所有键加引号；<a href="../docs/contracts/api.html">API 契约</a> 给出完整字段。</p>
+<h2 id="4-数据结构与算法">4. 数据结构与算法</h2>
+<h3 id="资源表创建与读取">资源表、创建与读取</h3>
+<p>使用资源描述表保存 apiVersion、kind、plural、作用域、新建对象/List 的方法及默认化/校验函数。
+这样 handler 处理统一流程，各类型只提供字段差异。存储键可采用 <code>/registry/pods/default/web</code>。</p>
+<p>创建时只接受一个 JSON 对象，限制大小，校验 URL/body 身份和类型，生成 UID/时间戳，使用
+“要求键不存在”提交。用户传来的创建 UID/RV 由服务端重新处理，防止复用旧身份。</p>
+<p>GET 从存储读取并解码，把 entry.modRevision 投影为字符串 RV。List 使用 Range 的原子
+快照，把每个 entry 的版本填入对象，把 snapshotRevision 填入 list.metadata.resourceVersion。
+读取无需为了填 RV 再写存储。</p>
+<h3 id="更新删除与-patch">更新、删除与 PATCH</h3>
+<p>PUT 接收完整对象，要求正整数 RV，保护 name/namespace/UID/creationTimestamp，再做 CAS。
+DELETE 可带 <code>?resourceVersion=X</code>；不带条件时按当前对象删除，成功响应返回删除前对象。</p>
+<p>普通资源 PATCH 使用 <code>application/merge-patch+json</code>：</p>
+<ol>
+<li>patch 必须是对象，并显式携带 metadata.resourceVersion。</li>
+<li>对象字段递归合并；数组整体替换；null 删除字段。</li>
+<li>合并后按 PUT 的身份、default/validate 和 CAS 处理。</li>
+</ol>
+<p>例如保留未提及标签、删 old、加 version：</p>
+<pre><code class="language-json">{"metadata":{"resourceVersion":"12","labels":{"old":null,"version":"v2"}}}
+</code></pre>
+<p>保留 JSON 数字精度，可用 RawMessage 分字段合并。媒体类型错误为 415；参考实现限制
+嵌套对象最多 128 层。JSON Patch、Strategic Merge Patch 和字段管理留在课程范围外。</p>
+<h3 id="status-与-binding">status 与 binding</h3>
+<p>/status 先读取当前对象，只替换 status，保留 spec 和 metadata。检查 RV 后比较状态；相同
+则返回当前对象、不提交。这样反复报告同一状态不会不断制造新事件。</p>
+<p>/binding 检查目标 Node 存在，再条件设置 nodeName；同目标重复操作按契约幂等，不同目标
+冲突。UID/RV 条件保护同名重建与并发修改。Node 与 Pod 之间没有多对象事务。</p>
+<h2 id="5-并发一致性与错误恢复">5. 并发、一致性与错误恢复</h2>
+<p>所有写入最终落到 KV 的条件提交。HTTP handler 先 GET 再计算并不阻止别人修改，因此写入
+时仍需 MatchRevision。PATCH 在读取后遇到并发写者，应返回 409，调用方重读重算。</p>
+<p>请求超时意味着调用方没有拿到结果。重试 create 前先查询；重试 update 前检查 UID/RV 和
+实际字段，避免把已成功的写入重复当作新动作。网络重试策略由调用组件决定。</p>
+<p>普通请求有超时与 body 限制；Watch 使用下一章的流式生命周期。API 退出时先通知活动 Watch，
+再关闭 HTTP 服务和存储。可变对象在 handler 内独立构造，避免共享 map 被并发修改。</p>
+<h2 id="6-与真实-kubernetes-的差异">6. 与真实 Kubernetes 的差异</h2>
+<p>本课程只有六类静态对象、一个版本编码和基础 default/validation。使用 JSON，无鉴权、
+RBAC、准入 webhook、版本转换或分页。普通 PUT 仍允许写 status；/status 是状态写者的窄接口。</p>
+<p>普通 PATCH 和 /status PATCH 的语义分别定义。API 与真实 Kubernetes 不要求完整兼容，
+但每个已公开行为都应保持稳定，供后续独立进程使用。</p>
+<h2 id="7-开发任务">7. 开发任务</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查点</th>
+<th>任务</th>
+<th>可以交给下一模块的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1 类型与路径</td>
+<td>Pod/Node、作用域、资源表、JSON 限制</td>
+<td>请求能定位到正确键</td>
+</tr>
+<tr>
+<td>A2 CRUD/List</td>
+<td>身份生成、版本投影、CAS、Status 错误</td>
+<td>客户端能读写带 RV 的对象</td>
+</tr>
+<tr>
+<td>A3 其他类型</td>
+<td>Service/Endpoints/RS/Deployment、默认值/校验</td>
+<td>模板和 selector 的字段可存取</td>
+</tr>
+<tr>
+<td>A4 PATCH/子资源</td>
+<td>合并、status 替换、binding</td>
+<td>控制器、节点和调度器有窄写接口</td>
+</tr>
+<tr>
+<td>A5 客户端与退出</td>
+<td>超时、错误解码、CLI、优雅退出</td>
+<td>其他进程通过 HTTP 协作</td>
+</tr>
+</tbody>
+</table></div>
+<p>先用 curl 做 POST→GET，再实现 List、PUT、DELETE；然后测试相同 RV 的并发写，最后接子资源。
+客户端负责请求/响应和 StatusError，组件负责重试。自己的包结构与命名可不同。</p>
+<h2 id="8-实验与验收">8. 实验与验收</h2>
+<p>仓库提供 <a href="examples/README.html">示例对象</a> 和 <a href="labs/core.html">API 基础练习</a>。先只启动 API，不启动节点：</p>
+<pre><code class="language-bash"># 在仓库根目录，建立本次临时二进制目录
+COURSE_BIN=$(mktemp -d /tmp/minik8s-course-bin.XXXXXX)
+(cd reference &amp;&amp; go build -buildvcs=false -o "$COURSE_BIN/mini-apiserver" ./cmd/mini-apiserver)
+python3 tutorial/labs/run-core.py --api-binary "$COURSE_BIN/mini-apiserver" --output /tmp/opencode/course-core-new
+rm -r "$COURSE_BIN"
+</code></pre>
+<p>练习依次使用公开 grader 的 api、patch、watch 检查，并用真实 HTTP 校验示例对象；结束后
+停止本次 API、删除临时 WAL。用自己的 API 时可提供 --url，具体方式见练习说明。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>操作</th>
+<th>应断言的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>create→GET/List</td>
+<td>UID 相同，item RV 和 list RV 有效</td>
+</tr>
+<tr>
+<td>用当前 RV PUT</td>
+<td>新 RV 增加，其他读取能看到修改</td>
+</tr>
+<tr>
+<td>用旧 RV PUT/PATCH/DELETE</td>
+<td>409，当前对象不变</td>
+</tr>
+<tr>
+<td>PATCH null/数组/标签</td>
+<td>删除、整体替换、递归保留符合契约</td>
+</tr>
+<tr>
+<td>修改身份或非法类型/字段</td>
+<td>拒绝，原对象保留</td>
+</tr>
+<tr>
+<td>status 写入 spec 和新状态</td>
+<td>spec 保留，status 替换；相同状态不新增 RV</td>
+</tr>
+<tr>
+<td>同 Node 重复绑定 / 换 Node</td>
+<td>按前置条件幂等 / 409</td>
+</tr>
+<tr>
+<td>API 确认写入后重启</td>
+<td>UID、数据和版本恢复</td>
+</tr>
+<tr>
+<td>8 个客户端创建 100 个不同对象</td>
+<td>100 个唯一 UID，均可读回；记录本次耗时</td>
+</tr>
+</tbody>
+</table></div>
+<p>status/binding/进程恢复的参考检查为 <code>python3 reference/scripts/verify-a01.py --output NEW_DIR</code>；
+CLI 为 <code>verify-cli.py</code>。实际记录见 <a href="../docs/progress/ALIGNMENT.html">对齐验收</a>。</p>
+<h2 id="9-常见错误与调试">9. 常见错误与调试</h2>
+<p>GET 里回填 RV 后再 Put，会让一次读取变成一次写入。PUT 信任 body 的 UID/name，会
+覆盖其他身份。忽略 409 并继续改缓存，会让控制器以为失败的动作已经完成。</p>
+<p>记录 method、URL、HTTP code、UID 和 RV。先区分 JSON 解码、字段校验、存储冲突，再检查
+组件是否持有旧对象。绑定失败时同时查目标 Node 是否存在。</p>
+<h2 id="10-资料与下一步">10. 资料与下一步</h2>
+<ul>
+<li>原文 §9、API 类订正；<a href="../docs/contracts/api.html">API 契约</a>。</li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc7396">RFC 7396</a> 定义 Merge Patch；本课程使用对象形式。</li>
+<li>下一步：<a href="03-watch.html">03 Watch</a>，让客户端从 List 的版本继续读取变化。</li>
+</ul>
+<p>提供的 <code>kubectl-mini</code> 可用于交互；flags 放在动词之前：</p>
+<pre><code class="language-bash">kubectl-mini --server http://127.0.0.1:8080 get pods
+kubectl-mini --server http://127.0.0.1:8080 --file pod.json create pods
+kubectl-mini --server http://127.0.0.1:8080 --file patch.json patch pods web
+kubectl-mini --server http://127.0.0.1:8080 delete pods web
+</code></pre>
+<p>--file - 从 stdin 读取。replace 使用完整对象及身份/RV，patch 使用当前 RV。成功 JSON 写到
+stdout，失败写到 stderr 并返回非零。CLI 可以复用，实际协议仍以本章契约为准。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

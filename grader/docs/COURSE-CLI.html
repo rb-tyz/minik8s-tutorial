@@ -1,0 +1,105 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>按小节与 stage 提交 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="按小节与-stage-提交">按小节与 stage 提交</h1>
+<p>课程保留原教程的十个小节，在小节内拆分为 70 个 stage。每次普通 <code>submit</code> 只验收当前
+stage 的一项能力，通过后进入下一项。初次接入先读 <a href="FIRST-SUBMISSION.html">从空 main 到第一次提交</a>。阶段目录见 <a href="../content/README.html">课程目录</a>。</p>
+<h2 id="安装与配置">安装与配置</h2>
+<p>在仓库根目录或交付包解压目录执行：</p>
+<pre><code class="language-bash">bash grader/install.sh
+cd /path/to/my-minik8s
+minik8s init --driver ./bin/my-minik8s --fixture ./lab --vm-id "$vm_uuid"
+minik8s stage
+minik8s submit
+</code></pre>
+<p>上例用于第一小节。<code>vm_uuid</code> 来自实验 VM 的创建记录，<code>./bin/my-minik8s</code> 是你的程序，<code>./lab</code> 包含课程测试文件。第四小节再添加 <code>--adapter ./test-hooks</code>，指定启停脚本目录。</p>
+<p>安装脚本在 <code>~/.local/bin/minik8s</code> 创建链接，保留仓库或解压目录即可使用；该目录应在 PATH 中。
+命令需要 Python 3。配置支持 adapter、driver、url、cni、fixture、vm-id，协议见
+<a href="ADAPTER.html">接入说明</a>。相对路径按学习者项目目录解析。</p>
+<h2 id="阶段编号">阶段编号</h2>
+<p><code>3.1</code> 表示第 3 小节的第 1 个 stage。例如 KV 小节依次验收：</p>
+<pre><code class="language-text">3.1 写入和读取一个键
+3.2 按前缀列举键
+3.3 给提交分配版本
+3.4 拒绝旧版本覆盖
+3.5 删除键并返回旧值
+3.6 补发快照后的事件
+3.7 推送删除事件并取消订阅
+3.8 处理过旧的订阅位置
+3.9 在进程崩溃后恢复
+</code></pre>
+<pre><code class="language-bash">minik8s stage 3.1      # 阅读该 stage 的任务
+minik8s section 3      # 阅读整个 KV 小节的原理与接口说明
+minik8s stages         # 查看分组目录与进度
+minik8s status         # 查看当前学习进度
+minik8s submit         # 验收当前 stage
+minik8s report         # 阅读最近一次提交报告
+</code></pre>
+<p>单个数字 <code>3</code> 是 <code>3.1</code> 的便捷别名。选择 stage 和临时提交时都可以使用。</p>
+<p>普通提交要求检查本身通过、测试进程成功退出，并确认清理。失败时保留当前 stage；
+中断时等待测试器清理。重启终端或服务后，在同一项目目录继续提交即可。</p>
+<h2 id="练习与全量验收">练习与全量验收</h2>
+<pre><code class="language-bash">minik8s submit --stage 3.4
+MINIK8S_COURSE_STAGE=3.4 minik8s submit
+minik8s submit --all
+</code></pre>
+<p>临时选择只记录本次结果，保留学习进度。命令参数优先于环境变量；全量验收前应取消临时
+stage 环境变量。<code>--all</code> 从头逐项执行 70 项，遇到首个失败停止，并保存连续通过的前缀。
+已通过的进度保留。课程完成后，普通 submit 提示完成，<code>--all</code> 仍可重测。</p>
+<p>原有综合回归入口继续可用：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage 3 --driver /path/to/driver --output /tmp/kv-section-new
+</code></pre>
+<p>这里的 <code>--stage 3</code> 沿用底层脚本编号，表示整个原教程 KV 小节。底层单项入口为：</p>
+<pre><code class="language-bash">bash grader/test.sh --stage 3 --step KV-GET \
+  --driver /path/to/driver --output /tmp/kv-get-new
+</code></pre>
+<p>底层 <code>--only</code> 继续服务于原 44 项综合检查。细分 <code>--step</code> 与它分开，避免改变原检查语义。</p>
+<h2 id="进度迁移与存储">进度迁移与存储</h2>
+<p>项目内 <code>.minik8s/</code> 保存配置、进度和运行记录。配置格式保持不变；课程进度 schema_version
+为 2，passed_stages 使用 <code>"3.1"</code> 形式的字符串，current_stage 为下一项编号或完成后的 null。
+提交报告和事件包含 course_version=2。</p>
+<p>旧版已通过的小节映射为该小节全部 stage 完成；例如旧版通过 1、2 后，新版从 3.1 继续。
+读取进度时提供转换后的视图；第一次写入新版进度之前，将旧文件保存为 <code>progress.v1.json</code>。
+已有备份保留，必要时另存带后缀的备份。旧提交与日志保留原样。</p>
+<p>每个项目只允许一个提交或配置写入操作。进度通过临时文件同步后原子替换，配置更新与进度
+迁移共用项目锁。建议在学习者项目的 <code>.gitignore</code> 中加入 <code>.minik8s/</code>。</p>
+<pre><code class="language-text">.minik8s/
+  config.json
+  progress.json
+  progress.v1.json          从旧版迁移时生成
+  lock
+  runs/&lt;run-id&gt;/
+    runner.log
+    events.jsonl
+    result.json
+    report.md
+    test/3.1/              每个 stage 独立的请求、响应与清理结果
+</code></pre>
+<p>从其他位置使用 <code>minik8s --project /path/to/project submit</code> 选择项目。</p>
+<h2 id="页面与机器接口">页面与机器接口</h2>
+<p><code>minik8s serve</code> 打开本地课程界面，见 <a href="LOCAL-UI.html">本地界面说明</a>。
+JSON 查询和事件入口为：</p>
+<pre><code class="language-bash">minik8s stages --json
+minik8s section 3 --json
+minik8s stage 3.1 --json
+minik8s status --json
+minik8s report --json
+minik8s submit --events
+</code></pre>
+<p>stages 返回 sections 分组与 stages 任务；每个 stage 包含字符串 ID、小节、位置、任务正文、
+提示、检查项与命令。前端使用 instructions_markdown 渲染任务，instructions_path 标记包内位置。
+status 返回连续通过的 passed_stages、current_stage、latest_run。</p>
+<p>事件 envelope 的 schema_version 为 1，课程结构标记 course_version=2。submit --events 的
+stdout 为 NDJSON，stderr 为命令级错误。事件包含 sequence、type、run_id、time；
+类型包括 run.started、stage.started、check.started/passed/failed、stage.tests_finished、
+stage.passed/failed、run.interrupted、run.finished。阶段通过在退出与清理确认后发出。</p>
+<h2 id="实验和复验">实验和复验</h2>
+<p>容器、CRI、kubelet、CNI、Proxy 小节在准备好的隔离 KVM 内运行；普通用户态小节可在宿主机
+运行。早期 API stage 使用本次独立 API 进程，依靠 adapter 的 stop 清理，因此需要生命周期
+适配器；它们的启动探测与验收不要求 Node List 或尚未教学的其他 HTTP 操作。</p>
+<pre><code class="language-bash">python3 -m unittest discover -s grader/tests -v
+python3 grader/verify-course.py --output /tmp/fine-course-check-new
+python3 reference/tests/vm/run.py --course-cli \
+  --image "$LAB/base.qcow2" --sha512 "$IMAGE_SHA512" \
+  --crictl "$LAB/crictl.tar.gz" --crictl-sha256 "$CRI_SHA256" \
+  --output /tmp/fine-course-vm-new
+</code></pre>
+<p>VM 流程先验证连续提交，再执行 70 项细分全量，最后执行原 44 项综合回归。
+环境准备与校验见 <a href="../../docs/VM-EXPERIMENTS.html">VM 说明</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

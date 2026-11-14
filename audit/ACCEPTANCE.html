@@ -1,0 +1,83 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第一阶段最终验收 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="第一阶段最终验收">第一阶段最终验收</h1>
+<p>结论：<strong>第一阶段审计完成，可以完整交付。</strong> 验收日期为 2026-11-05。交付包括原教程审计、独立问题清单、可复现证据、官方来源、后续实现计划和迁移复验入口。第二阶段从 KV/Watch 开始实施。</p>
+<p>用户授权使用现有 KVM 或新建虚拟机后，本轮选择新建可销毁 VM。正式自动复验在两台全新 KVM 上完成；所有临时 VM 均已停止，任务磁盘、seed、镜像缓存和 SSH key 均已删除，现有 libvirt VM 保持关机状态。身份、创建命令、guest 清理和宿主机回收记录见 <span class="local-artifact" title="本地工程附件：audit/evidence/logs/delivery">delivery 日志（本地工程附件）</span>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>验收内容</th>
+<th>结果</th>
+<th>实际证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原文和章节覆盖</td>
+<td>固定原文 3118 行，24 章均有分析与映射</td>
+<td>AUDIT.md、source-tutorial.md</td>
+</tr>
+<tr>
+<td>独立问题清单</td>
+<td>102 个稳定 ID，字段和统计同步；7 条旧归因撤回</td>
+<td>ERRORS.md、records.json、STATS.md</td>
+</tr>
+<tr>
+<td>历史六项待验证</td>
+<td>全部完成审计结项，保留编号与结果</td>
+<td>experiments.json</td>
+</tr>
+<tr>
+<td>普通用户态测试</td>
+<td>51 个通过，0 失败，0 跳过，全部运行 -race</td>
+<td>delivery/user-space/summary.json</td>
+</tr>
+<tr>
+<td>编译/生成反例</td>
+<td>IPAM、CNI、proxy、proto 四项均检出预期诊断</td>
+<td>user-space/ipam.log、cni.log、proxy.log、proto.log</td>
+</tr>
+<tr>
+<td>Informer 竞态</td>
+<td>有限次重连和实际适配器调用，独立进程按预期捕获 DATA RACE</td>
+<td>user-space/expected-race.log</td>
+</tr>
+<tr>
+<td>内核与运行时</td>
+<td>9 组通过，含 cgroup、runc、netns、PID 1、pivot_root、nft/legacy 与清理</td>
+<td>fresh-vm/kernel-results.json</td>
+</tr>
+<tr>
+<td>跨节点网络</td>
+<td>7 组通过，含返程路由、SNAT、per-node CIDR 与两节点清理</td>
+<td>fresh-vm/cross-results.json</td>
+</tr>
+<tr>
+<td>真实 CRI</td>
+<td>containerd CRI v1 的实际容器退出后状态为 EXITED、exitCode=42</td>
+<td>fresh-vm/cri-results.json、cri-guest.log</td>
+</tr>
+<tr>
+<td>VM 回收</td>
+<td>正式流程停止两台 VM、删除其临时目录；调试 VM 与缓存也回收</td>
+<td>fresh-vm/vm-delete.json、host-cleanup.json</td>
+</tr>
+<tr>
+<td>来源和完整性</td>
+<td>15 份固定来源 local=tag=commit；正式校验清单全部通过</td>
+<td>sources-online.log、user-space/checksums.log</td>
+</tr>
+<tr>
+<td>原文命令核对</td>
+<td>kind v0.20.0 拒绝 kubeconfig-path，get kubeconfig 可用</td>
+<td>kind-obsolete-command.log、kind-supported-command.log</td>
+</tr>
+</tbody>
+</table></div>
+<p>首次验收与前次修订的状态保存在 history/；历史失败日志保留原样。最终证据采用 delivery/user-space 和 delivery/fresh-vm，旧日志中的已撤回结论以当前 ERRORS.md 的分类为准。</p>
+<p>此前 F01..F07 已完成处理：分别修正辅助 helper 归因、固定来源版本、dirty 重排、youngest 缩容、Gone 枚举、Informer 通知说明，以及统计、复现、隔离和清理。补查新增了 IPAM 的 ParseCIDR 编译错误与广播地址边界。PENDING-001..006 分别以双节点路由、独立池实验、PID=1、真实 CRI、两个 iptables 后端、十万次有限写入完成结项。</p>
+<p>执行中修正的环境/验收器问题包括：seed 光驱未被 genericcloud 内核识别，改为只读 virtio 磁盘；detached runc 继承 PIPE 导致等待，改为文件输出；systemd cgroup sandbox 指定 system.slice；显式删除 guest veth，消除延迟 netns 释放的残留；跨节点接口枚举避免 set -e 提前退出；动态分配回环端口，避免 TIME_WAIT 冲突。失败现场与修正后通过结果均保留。</p>
+<p>复现入口：</p>
+<pre><code class="language-bash">bash audit/evidence/verify.sh
+python3 audit/evidence/verify_sources.py --online
+python3 audit/check_delivery.py
+</code></pre>
+<p>完整 KVM 重建和销毁命令见 <a href="../docs/VM-EXPERIMENTS.html">VM-EXPERIMENTS.md</a>。交付包可在新目录解压后运行普通复验；打包和迁移验收见 <a href="DELIVERY.html">DELIVERY.md</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

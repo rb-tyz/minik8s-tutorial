@@ -1,0 +1,102 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MiniK8s 第二阶段架构 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="minik8s-第二阶段架构">MiniK8s 第二阶段架构</h1>
+<p>教学范围与深度遵循 <a href="../MVP-SCOPE.html">MVP-SCOPE.md</a>：面向 Kubernetes 架构基础较少的读者，
+按原文与订正实现 MVP，工程强化和后续扩展分别说明。</p>
+<h2 id="进程与模块">进程与模块</h2>
+<p>MiniK8s 采用五个独立进程，公开 HTTP API 是控制面组件之间的唯一通信接口。API Server 内嵌单机持久 KV，其他进程不访问存储文件，也不共享内存状态。</p>
+<pre><code class="language-text">curl / mini-kubectl
+        |
+        v
+mini-apiserver + internal/kv
+        |
+        +-- mini-controller-manager -- Deployment -&gt; ReplicaSet -&gt; Pod
+        +-- mini-scheduler ---------- Node 筛选、资源建账、条件绑定
+        +-- mini-kubelet ------------ Runtime -&gt; containerd CRI
+        |                             CNI -&gt; mini-cni / loopback
+        +-- mini-proxy -------------- Service/Endpoints -&gt; iptables
+</code></pre>
+<p>对应任务为 K01→K02→A01→A02→C01→S01→N01→R01→R02→P01→I01。原文范围为单控制面、IPv4、ClusterIP、hostPath，含单节点演示与 §14.4 的静态路由跨节点实验。NodePort、DNS、路径路由在后续扩展实现；HPA、指标监控、Service Mesh、Serverless 不在项目范围内。</p>
+<h2 id="核心契约">核心契约</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>接口与行为</th>
+<th>对应任务</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KV</td>
+<td>单键 CAS、单调 revision、持久提交、恢复；Get/Range 返回副本</td>
+<td>K01</td>
+</tr>
+<tr>
+<td>Watch</td>
+<td>游标连续、历史重放、独立投递、取消、压缩与慢消费者断流</td>
+<td>K02</td>
+</tr>
+<tr>
+<td>API</td>
+<td>JSON/HTTP CRUD、List/Watch、RV 编码、identity 校验</td>
+<td>A01/A02</td>
+</tr>
+<tr>
+<td>status/binding</td>
+<td>status 只改状态；binding 原子设置 nodeName，支持幂等</td>
+<td>A02</td>
+</tr>
+<tr>
+<td>Informer/Queue</td>
+<td>List→Watch、差异通知、dirty 去重、延时重试、取消与关闭</td>
+<td>C01</td>
+</tr>
+<tr>
+<td>Scheduler</td>
+<td>从已绑定 Pod 建账，筛选评分，串行条件绑定与重试</td>
+<td>S01</td>
+</tr>
+<tr>
+<td>Controller</td>
+<td>level-triggered、owner UID、期望计数、selector 校验、status 抑制</td>
+<td>R01/R02</td>
+</tr>
+<tr>
+<td>Kubelet/Runtime</td>
+<td>Node 注册与心跳；sandbox/container 分离；init 顺序；退出状态</td>
+<td>N01</td>
+</tr>
+<tr>
+<td>CNI/Proxy</td>
+<td>ADD/DEL/CHECK 幂等；ClusterIP DNAT；多端口与删除清理</td>
+<td>P01</td>
+</tr>
+</tbody>
+</table></div>
+<p>具体签名和路由在各模块实现时写入 <code>docs/contracts/&lt;module&gt;.md</code>，调用方沿用已验收接口。变更接口时同时更新契约、调用方和测试。</p>
+<h3 id="kvrevision-与恢复">KV、Revision 与恢复</h3>
+<p>使用一把互斥锁串行提交并分配 revision。Get/Range 返回独立副本；Range 按 key 排序。写入采用单文件追加日志，记录长度、内容和校验和；<code>fsync</code> 成功后才返回成功。恢复时扫描完整记录，保留最后已确认状态，并恢复全局 revision 与 item create/mod revision。</p>
+<p>尾部不完整记录按未提交处理并截断；中段损坏停止启动并报告位置，不跳过损坏继续恢复。正常重启、进程强杀、尾部截断、中段损坏及写入/同步失败均需要测试。相同值 Put 推进 revision，status 无变化抑制由调用方处理。</p>
+<h3 id="watch-与-api">Watch 与 API</h3>
+<p><code>resourceVersion</code> 区分缺省、显式 0 和具体值。具体 RV=X 从 X 之后交付；压缩至 C 时，X=C 仍可从 C+1 开始。每个订阅者维护独立游标与有界投递队列，注册与初始快照使用同一存储顺序，网络发送不持存储锁。慢消费者收到明确的断流状态并重新 List/Watch；只有所需历史确实被压缩时返回 410。</p>
+<p>对象的 <code>metadata.resourceVersion</code> 由 KV modRevision 在 GET/LIST/WATCH 编码时回填，list RV 来自快照。update 校验 body/URL name、namespace、UID 和 creationTimestamp；CAS 冲突返回 409。<code>/status</code> 保留 spec 与 identity；<code>/binding</code> 通过条件更新原子绑定，重复绑定同一节点幂等。</p>
+<h3 id="调度与控制器">调度与控制器</h3>
+<p>S01 使用一个调度 worker，每次绑定前通过 API List 已绑定 Pod 重建用量，以串行决策替代本地 Assume 账本。绑定使用 Pod UID/RV 条件；响应丢失后重新 GET 检查结果。零容量节点不参与评分，删除或终止释放资源。该方案支持一个 scheduler 进程，代价是每次决策增加两次 List，详见 <code>scheduler.md</code>。</p>
+<p>R01 按 controller owner UID 和 selector 计算已有子 Pod，保留无归属对象。每轮通过 API List 建账，用稳定 slot 名称使创建重试幂等；已确认写入立即计数，无需独立 expectation 账本。API 校验 selector 与 template label 一致，行为见 <code>replicaset.md</code>。Deployment 复制缓存对象后修改，处理写入错误，按 maxSurge/maxUnavailable 调整新旧 RS。Endpoints 监听 Service 与 Pod 变化，解析命名端口。</p>
+<h3 id="runtimecni-与-proxy">Runtime、CNI 与 Proxy</h3>
+<p>N01 通过固定版本 crictl 调用 containerd CRI v1，复用现有容器守护进程。Runtime 接口隔离 sandbox/container ID、状态、退出码和清理；init container 串行成功后才启动应用容器。Kubelet 负责 Node 注册、心跳和 Pod status。</p>
+<p>CNI 使用标准 stdin/env/stdout 调用，支持 ADD/DEL/CHECK，IPAM 通过锁和已分配记录保证地址唯一。Proxy 从 Service/Endpoints 构建目标规则，按端口隔离后端并清理失效规则。实验设施在
+启动前准备 <code>ip_forward</code>、<code>br_netfilter</code> 等内核条件，具体职责见网络契约。</p>
+<h2 id="包边界与工作量">包边界与工作量</h2>
+<pre><code class="language-text">reference/
+  cmd/                    # 五个进程入口
+  internal/
+    kv/ api/ client/
+    informer/ workqueue/
+    scheduler/ controller/
+    kubelet/ runtime/ cni/ proxy/
+  scripts/ tests/
+</code></pre>
+<p>依赖方向为 <code>cmd -&gt; 组件包 -&gt; client -&gt; api types</code>；API Server 独占 <code>internal/kv</code>。Runtime、CNI、iptables 通过窄接口调用外部工具。默认使用 Go 标准库，containerd CRI 客户端按 N01 的实际接入需要引入。</p>
+<p>产品代码目标约 <strong>5000 行，不含测试</strong>：KV/API/客户端约 1500，informer/queue/controller 约 1100，scheduler/kubelet/runtime 约 1200，CNI/proxy 约 800，进程入口与脚本约 400。行数是范围约束，不为凑数增加抽象。</p>
+<h2 id="验证分层">验证分层</h2>
+<p>包级单元测试和 HTTP 测试在普通用户环境执行；跨进程测试通过真实 API 驱动调度与控制器。容器、mount、netns、cgroup、CNI、iptables 实验只在用户批准的 KVM 内运行，宿主机禁止执行这些特权操作。每模块记录命令、退出码、断言、日志和未执行项，随后进入下一任务。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

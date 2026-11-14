@@ -1,0 +1,90 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CRI 最小操作实验 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="cri-最小操作实验">CRI 最小操作实验</h1>
+<p>这是第 06 章的运行时适配练习。所有命令在已批准、已核对 UUID 的 KVM 内执行；运行时、
+本地 fixture 镜像和 crictl v1.29.0 已由提供的环境准备好。实验复用 containerd/runc，
+学习目标是理解调用顺序、ID、配置与状态，无需实现 OCI 运行时。</p>
+<h2 id="创建前先检查">创建前先检查</h2>
+<pre><code class="language-bash"># VM_UUID 已从批准的创建记录取得，按 environment.md 核对
+[[ $(systemd-detect-virt --vm) == kvm ]] || exit 1
+ACTUAL_UUID=$(cat /sys/class/dmi/id/product_uuid)
+[[ ${ACTUAL_UUID,,} == ${VM_UUID,,} ]] || exit 1
+crictl --runtime-endpoint unix:///run/containerd/containerd.sock --timeout 10s info -o json
+</code></pre>
+<p>前两项应与本次批准的 KVM 记录一致。第三项的 status.conditions 中 RuntimeReady=true；
+使用 Pod 网络时还需 NetworkReady=true。创建本次工作目录并准备失败清理。在后面的 JSON 中，log_directory 改为本次 WORK/logs。</p>
+<pre><code class="language-bash">WORK=$(mktemp -d /tmp/minik8s-cri-lab.XXXXXX)
+mkdir -p "$WORK/logs"
+cd "$WORK"
+CRI=(crictl --runtime-endpoint unix:///run/containerd/containerd.sock --timeout 10s)
+SID= CID= EXIT_CID=
+cleanup_cri() {
+  [[ -z $EXIT_CID ]] || "${CRI[@]}" rm --force "$EXIT_CID"
+  [[ -z $CID ]] || "${CRI[@]}" rm --force "$CID"
+  if [[ -n $SID ]]; then "${CRI[@]}" stopp "$SID"; "${CRI[@]}" rmp "$SID"; fi
+}
+trap cleanup_cri EXIT
+</code></pre>
+<p>命令失败时先保留目录与日志，清理失败保留 ID 再试，最后销毁本次 guest。</p>
+<h2 id="准备两个-json">准备两个 JSON</h2>
+<p>sandbox.json 描述 Pod 级环境，UID 使用本次练习的唯一值：</p>
+<pre><code class="language-json">{"metadata":{"name":"cri-lab","namespace":"default","uid":"cri-lab-unique","attempt":0},
+ "labels":{"course":"cri-lab","pod-uid":"cri-lab-unique"},
+ "log_directory":"/tmp/minik8s-cri-lab",
+ "linux":{"cgroup_parent":"system.slice",
+          "security_context":{"namespace_options":{"network":0}}}}
+</code></pre>
+<p>network=0 使用 Pod 网络，CNI 已配置后采用此值；首次只验运行时可用 network=2 使用
+节点网络。它们是 CRI NamespaceMode 的 POD/NODE。应用监听的端口在节点网络模式下需避开
+其他进程。container.json 描述应用：</p>
+<pre><code class="language-json">{"metadata":{"name":"app","attempt":0},
+ "image":{"image":"minik8s.local/fixture:n01"},
+ "command":["/fixture"],"args":["http",":8080"],
+ "envs":[{"key":"POD_MARK","value":"cri-lab"}],
+ "labels":{"course":"cri-lab","pod-uid":"cri-lab-unique"},
+ "log_path":"app-0.log",
+ "linux":{"resources":{"cpu_shares":51,"cpu_period":100000,"cpu_quota":5000,
+                       "memory_limit_in_bytes":67108864,"unified":{"pids.max":"512"}},
+          "security_context":{"seccomp":{"profile_type":0},
+             "capabilities":{"drop_capabilities":["ALL"],"add_capabilities":["NET_BIND_SERVICE"]}}}}
+</code></pre>
+<p>CPU=50 毫核得到 shares=51，以及每 100ms 最多 5ms 的 CPU quota；内存为 64 MiB。
+这里还设置 pids.max=512、RuntimeDefault seccomp（profile_type=0）和原文的能力限制。
+/sys/fs/cgroup 下的实际数值及 /proc/self/status 的 Seccomp/CapEff 可用于核对。
+Pod API 的 env 用 name/value，CRI JSON 的 envs 用 key/value。hostPath 则转成 mounts：
+container_path、host_path、readonly。字段转换由薄适配层完成。</p>
+<h2 id="按顺序执行并保留-id">按顺序执行并保留 ID</h2>
+<pre><code class="language-bash"># 上述两个 JSON 保存后，将示例日志路径替换为本次目录
+jq --arg logs "$WORK/logs" '.log_directory=$logs' sandbox.json &gt; sandbox-local.json
+mv sandbox-local.json sandbox.json
+SID=$("${CRI[@]}" runp sandbox.json)
+CID=$("${CRI[@]}" create "$SID" container.json sandbox.json)
+"${CRI[@]}" start "$CID"
+"${CRI[@]}" inspectp "$SID" -o json
+"${CRI[@]}" inspect "$CID" -o json
+"${CRI[@]}" ps -a --pod "$SID" -o json
+</code></pre>
+<p>runp 返回 sandbox ID，create 返回 container ID；create 产生 Created，start 后才会 Running。
+inspectp 的 status.network.ip 是 PodIP，inspect 的 status 包含 state、exitCode 和 finishedAt。
+Pod 模式从实际 IP:8080 读取 HTTP，应得到 cri-lab；节点网络模式从节点的 8080 读取。
+再用相同镜像创建另一个名称的容器，观察非零退出：</p>
+<pre><code class="language-bash">jq '.metadata.name="exit-check" | .args=["exit","42"] | .log_path="exit-check.log"' \
+  container.json &gt; exit.json
+EXIT_CID=$("${CRI[@]}" create "$SID" exit.json sandbox.json)
+"${CRI[@]}" start "$EXIT_CID"
+# 在 30 秒内轮询 inspect，state=CONTAINER_EXITED 后检查 exitCode=42
+"${CRI[@]}" inspect "$EXIT_CID" -o json
+</code></pre>
+<p>立即 inspect 可能还处于 Running，实验按条件等待终止。每个新容器使用独立 metadata.name。</p>
+<p>在 Go 中使用 exec.CommandContext 和参数数组，设置超时，读取命令结果并检查退出码。
+JSON 用 encoding/json 生成，错误应附操作名和 ID。调用超时后先查询现状，避免重复创建；
+资源标签中保存节点、Pod UID、容器名称/attempt 与配置摘要，供重启后定位资源。
+标签键与摘要格式可自行选择。</p>
+<h2 id="清理与下一步">清理与下一步</h2>
+<pre><code class="language-bash">cleanup_cri
+trap - EXIT
+</code></pre>
+<p>上面的 cleanup_cri 同时处理两个应用 ID 和 sandbox。只处理本次 ID 或本次唯一标签下的资源。确认 sandbox 与
+容器不再列出，再删除工作文件。练习脚本应使用 EXIT trap 和 timeout，在失败路径也执行
+这些清理步骤；虚拟机实验结束后由提供的设施销毁。</p>
+<p>然后实现 Runtime：Sync 先查询标签和状态，缺失才执行上述创建序列；Remove 采用上述
+清理序列；Sandboxes 返回本节点自有资源；Ready 检查 CRI 条件。init/restart 策略继续按
+第 06 章实现。参考运行日志位于 N01/R01 及 P01/I01 的 VM 验收目录。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,1458 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MiniK8s 原教程逐项审计记录 · MiniK8s</title><link rel="stylesheet" href="../style.css"></head><body><header><nav><a href="../index.html">MiniK8s · 订正版</a><a href="../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="minik8s-原教程逐项审计记录">MiniK8s 原教程逐项审计记录</h1>
+<p>原文固定提交：<code>506abffc121e7ad98cdc8f310a9f0a8db69d0843</code>。文件为 <code>evidence/research/source-tutorial.md</code>。</p>
+<p>本清单由 <span class="local-artifact" title="本地工程附件：audit/records.json">records.json（本地工程附件）</span> 与 <span class="local-artifact" title="本地工程附件：audit/render_records.py">render_records.py（本地工程附件）</span> 生成。修改记录后执行 <code>python3 audit/render_records.py</code>；使用 <code>--check</code> 检查交付文件是否同步。统计见 <a href="STATS.html">STATS.md</a>，体系与后续实施顺序见 <a href="AUDIT.html">AUDIT.md</a>。</p>
+<p>用户态测试覆盖原文明确的控制流及标注假设的辅助实现。<code>CONFIRMED</code> 表示具体程序中观察到所述结果；原文归因以本条的分类和证据边界为准。历史日志保留原样，当前测试名称与改判记录见 <a href="REVISION.html">REVISION.md</a>。</p>
+<h2 id="api-001--编码响应时必须由-kv-revision-回填对象-rv">API-001 · 编码响应时必须由 KV revision 回填对象 RV</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§9.2 行 975–1002（<code>meta.ResourceVersion = ""</code> → <code>s.kv.Put(key, bytes, 0)</code> → 之后才 <code>meta.ResourceVersion = fmt.Sprintf("%d", rev)</code> 并重编码<strong>返回给客户端</strong>）</li>
+<li><strong>触发条件</strong>：100% 必现。任何 create 之后的 GET/LIST/watch。</li>
+<li><strong>原因与证据边界</strong>：写入 JSON 中 RV 为空或落后，KV.Get/Range 同时返回正确 revision；GET/LIST 的编码层未给出。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/apiserver/apiserver_test.go::TestPersistedObjectLacksResourceVersion</code> → <code>minikv holds rev=1 but the stored JSON has metadata.resourceVersion="" (response said "1")</code></li>
+<li><strong>修复或实施建议</strong>：GET/LIST/WATCH 统一用存储 revision 回填 RV；无需额外 Put。</li>
+<li><strong>影响范围</strong>：辅助编码器若原样返回存储字节，客户端缺少可用 RV；原文缺失的 GET/LIST 编码器可以正确补齐。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="api-002--update-不校验-nameuid不保护-identity-字段">API-002 · update 不校验 name/uid，不保护 identity 字段</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§9.2 行 1009–1030（<code>handleUpdate</code> 直接用 body 覆盖 URL key）</li>
+<li><strong>触发条件</strong>：PUT 的 body 与 URL 的 name 不一致，或伪造 uid。</li>
+<li><strong>原因与证据边界</strong>：handleUpdate 未展开 Defaulting/Admission/Validation；辅助 Server 未实现 identity 校验。原文已预留校验步骤。</li>
+<li><strong>复现证据</strong>：<code>TestUpdateIgnoresIdentityFields</code> → <code>stored metadata.name="totally-different" uid="forged" under key /registry/pods/default/a</code></li>
+<li><strong>修复或实施建议</strong>：校验 name 一致、uid 不可变、creationTimestamp 不可变、不可变字段。</li>
+<li><strong>影响范围</strong>：缺少 identity 校验的适配器会接受错误字段；完整 API 需用 body/URL 不一致测试验证。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="api-003--watch-的-resourceversion0-与缺省不可区分并入-kv-004">API-003 · watch 的 <code>resourceVersion=0</code> 与“缺省”不可区分（并入 KV-004）</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§10.2 行 1080（<code>startRev, _ := strconv.ParseInt(rvStr, 10, 64)</code>）</li>
+<li><strong>触发条件</strong>：watch 不带 <code>resourceVersion</code>，或带 <code>"0"</code>。</li>
+<li><strong>原因与证据边界</strong>：<code>ParseInt("")</code> 返回 0 且错误被忽略；两种语义都变成 0。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/apiserver/apiserver_test.go::TestWatchRV0ReplaysHistory</code> → <code>watch with NO resourceVersion (documented 'start from now') emitted 4 events for 2 pre-existing objects</code></li>
+<li><strong>修复或实施建议</strong>：见 KV-004（三态解析）。</li>
+<li><strong>影响范围</strong>：同 KV-004。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：KV-004</li>
+</ul>
+<h2 id="api-004--watch-不-flush-header客户端无法确认订阅">API-004 · watch 不 flush header，客户端无法确认订阅</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§10.2 行 1084–1095（<code>WriteHeader(200)</code> 后直到首个事件/30s bookmark 才 <code>Flush</code>）</li>
+<li><strong>触发条件</strong>：安静的前缀（无事件）。</li>
+<li><strong>原因与证据边界</strong>：<code>WriteHeader</code> 只写缓冲；需显式 <code>Flush</code> 才能发送 header。</li>
+<li><strong>复现证据</strong>：<code>TestDeleteWatchFrameIsEmptyObject</code> 的前半段 → <code>no HTTP response headers 700ms after the watch request</code></li>
+<li><strong>修复或实施建议</strong>：<code>WriteHeader(200)</code> 后立即 <code>flusher.Flush()</code>。</li>
+<li><strong>影响范围</strong>：客户端 30s 内不知道 watch 是否被接受；超时设置短则误判断线。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="api-005--没有-status-与-binding-子资源">API-005 · 没有 /status 与 /binding 子资源</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§9.2 <code>ServeHTTP</code>（行 940–960，仅 7 个 verb，无子资源）； §12.3 设计要求 binding；§11.5 使用 /status</li>
+<li><strong>触发条件</strong>：scheduler bind、kubelet 写 status。</li>
+<li><strong>原因与证据边界</strong>：<strong>原文没有给出子资源路由，也没有给出 <code>parsePath</code> 的实现</strong>，因此静态上 无法确立“<code>/pods/a/status</code> 会被如何路由”；但可以确立 §9.2 的 handler 集合、 §12.3 的 binding 契约与 §11.5 的 status 契约之间没有闭合的接口。</li>
+<li><strong>复现证据</strong>：静态对照原文</li>
+<li><strong>修复或实施建议</strong>：在 apiserver 契约里显式定义 <code>parsePath</code> 的子资源规则与 <code>/status</code>、<code>/binding</code> 的写入语义（仅更新对应字段、校验 RV）。</li>
+<li><strong>影响范围</strong>：scheduler 无法绑定；status 写入可能覆盖整个对象（KUBELET-006）。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="api-006--handlegethandlelisthandlepatchhandledelete-从未给出">API-006 · <code>handleGet</code>/<code>handleList</code>/<code>handlePatch</code>/<code>handleDelete</code> 从未给出</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§9.2 行 951–957 引用；全文无定义</li>
+<li><strong>触发条件</strong>：读者照此搭建 apiserver。</li>
+<li><strong>原因与证据边界</strong>：教程只给出 create/update 两个 handler，却在同一段声称 “That's about 150 lines covering five verbs”。<code>handleGet</code>/<code>handleList</code>/<code>handlePatch</code>/ <code>handleDelete</code> 的符号在全文出现次数为 0（grep），<code>emitEvent</code>/<code>emitBookmark</code>/ <code>emitErr</code>/<code>parsePath</code>/<code>trimHistory</code> 同样只有调用点没有定义。</li>
+<li><strong>复现证据</strong>：静态（全文符号计数）。<strong>这不是运行时 bug</strong>：原教程没有声称提供完整仓库， 开头明确写 “the goal is not a runnable codebase”。但它与 §5 “each phase must be runnable end-to-end” 的表述冲突（DOC-001），属于文档完整性/教学简化未标注的问题。</li>
+<li><strong>修复或实施建议</strong>：补全 handler，或明确标注为伪代码；<code>Range</code> 的快照 rev 要写进 list 响应的 <code>metadata.resourceVersion</code>（§9.3 rule 1 目前没有落点）。</li>
+<li><strong>影响范围</strong>：读者无法照此实现 LIST/GET/PATCH/DELETE；informer 的 List 无 RV 可用。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cgroup-001--新建层级未逐层委派控制器写-leaf-限制失败">CGROUP-001 · 新建层级未逐层委派控制器，写 leaf 限制失败</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§6.2 行 308–318（先 <code>MkdirAll</code> 孙目录 → 写 <code>memory.max</code> 等 → 最后 <code>writeFile("/sys/fs/cgroup/minik8s/cgroup.subtree_control", "+cpu +memory +pids +io")</code>）</li>
+<li><strong>触发条件</strong>：在未委派的 root/pod/container 层级写 cpu.max、memory.max 或 pids.max。</li>
+<li><strong>原因与证据边界</strong>：控制器必须逐层启用；本轮直接观察 leaf/memory.max 不存在，写入失败，补齐两层委派后可写。+io 的可用性取决于上层委派，未作为所有环境的必然错误。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：逐层委派（root→slice→pod→container），逐层检查 <code>cgroup.controllers</code>； 不要写不存在的控制器。</li>
+<li><strong>影响范围</strong>：§6.2 的“最小可用容器”完全不能启动。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：cgroup v2 文档 "Enabling and Disabling Controllers"。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cgroup-002--post-start-写-cgroupprocs-的-esrch-窗口被-must-变成崩溃">CGROUP-002 · post-Start 写 cgroup.procs 的 ESRCH 窗口被 must() 变成崩溃</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§6.2 行 341–343（<code>must(cmd.Start()); writeFile(.../cgroup.procs, pid)</code>）</li>
+<li><strong>触发条件</strong>：进程在 Start 与写入之间退出。</li>
+<li><strong>原因与证据边界</strong>：无 <code>CLONE_INTO_CGROUP</code>，且 <code>must</code> 不容忍 ESRCH。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：用 <code>clone3(CLONE_INTO_CGROUP)</code>（内核 5.7+）； 或把 ESRCH 视作“进程已退出”而非错误。</li>
+<li><strong>影响范围</strong>：短命容器（init container、失败的 entrypoint）启动即崩溃。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cgroup-003--硬编码-sysfscgroup-根与-systemd-冲突">CGROUP-003 · 硬编码 <code>/sys/fs/cgroup</code> 根，与 systemd 冲突</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§6.2 行 310</li>
+<li><strong>触发条件</strong>：systemd 主机</li>
+<li><strong>原因与证据边界</strong>：本轮 guest 可用控制器与层级由实际文件记录；硬编码根目录需要与 systemd 的管理范围协调。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-guest.log 的 ENV 与 CGROUP-001-002 输出；设计取舍。</li>
+<li><strong>修复或实施建议</strong>：用 systemd slice</li>
+<li><strong>影响范围</strong>：硬编码 <code>/sys/fs/cgroup</code> 根，与 systemd 冲突</li>
+<li><strong>验证状态</strong>：隔离 KVM 环境测量</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="cni-001--veth-peer-名称-16-字符超过-ifnamsiz">CNI-001 · veth peer 名称 16 字符超过 IFNAMSIZ</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§14.2 行 2062（<code>PeerName: "eth-tmp-" + containerID[:8]</code>）</li>
+<li><strong>触发条件</strong>：每个 CNI ADD。</li>
+<li><strong>原因与证据边界</strong>：8+8=16 &gt; 15。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：peer 名截断到 15 字符，或用哈希短名（如 <code>veth</code> + 8 hex）。</li>
+<li><strong>影响范围</strong>：Pod 网络全部失败。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cni-002--containerid8-对短-id-panic">CNI-002 · <code>containerID[:8]</code> 对短 ID panic</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§14.2 行 2059</li>
+<li><strong>触发条件</strong>：<code>CNI_CONTAINERID</code> 长度 &lt; 8。</li>
+<li><strong>原因与证据边界</strong>：无长度检查；CNI 规范不约束长度。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：先补零/哈希，再截断。</li>
+<li><strong>影响范围</strong>：学习者用短 ID 调试时插件崩溃。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cni-003--check-无条件成功del-的-releaseip-实现未给出">CNI-003 · CHECK 无条件成功；DEL 的 releaseIP 实现未给出</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§14.2 <code>cmdDel</code>、<code>case "CHECK": os.Exit(0)</code></li>
+<li><strong>触发条件</strong>：对已损坏的网络执行 CHECK，或补齐 DEL 的幂等释放实现。</li>
+<li><strong>原因与证据边界</strong>：原文 CHECK 分支直接 os.Exit(0)，没有检验网络；DEL 在删链路前调用 releaseIP，释放函数没有展开。</li>
+<li><strong>复现证据</strong>：原文 §14.2 的 CHECK/DEL 分支；固定 CNI SPEC.md 的 CHECK/DEL 规范。</li>
+<li><strong>修复或实施建议</strong>：CHECK 检查接口、IP、路由等声明状态；releaseIP 在资源缺失时幂等执行并正确持锁。</li>
+<li><strong>影响范围</strong>：CHECK 会漏报网络损坏；DEL 是否正确释放 IP 取决于补齐的 helper。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：CNI SPEC（v1.1.0）行 245–253、270–285。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cni-004--result-类型不匹配142-不编译">CNI-004 · Result 类型不匹配，§14.2 不编译</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§14.2 行 2082–2098</li>
+<li><strong>触发条件</strong>：编译。</li>
+<li><strong>原因与证据边界</strong>：带 json tag 与不带 tag 的匿名结构体是不同类型。</li>
+<li><strong>复现证据</strong>：<code>evidence/logs/compile-snippets.log</code> → <code>cannot use []struct{Address, Gateway string}{…} ... as []struct{Address string "json:\"address\""; ...}</code></li>
+<li><strong>修复或实施建议</strong>：用具名类型或直接赋值字段。</li>
+<li><strong>影响范围</strong>：代码不可编译。</li>
+<li><strong>验证状态</strong>：编译器拒绝</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cni-005--firstipsubnet-未定义且语义矛盾">CNI-005 · <code>firstIP(subnet)</code> 未定义且语义矛盾</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§14.2 行 2084（作网关）、§14.3（作“要跳过的网关”）</li>
+<li><strong>触发条件</strong>：读者实现 ADD/IPAM 时。</li>
+<li><strong>原因与证据边界</strong>：<code>firstIP</code> 全文只有调用点、没有定义；同一函数在两处被赋予不同含义 （网关地址 vs 要跳过的地址）。这不是运行时反例，而是“接口未闭合 + 语义矛盾”。</li>
+<li><strong>复现证据</strong>：静态 + <code>10.244.0.0/24</code> 的网络地址/首主机地址计算 （guest <code>cni_checks.sh</code> 打印 <code>network_address=10.244.0.0, first host=10.244.0.1</code>）</li>
+<li><strong>修复或实施建议</strong>：明确定义为“首个可用主机地址”，并在 IPAM 中跳过同一地址。</li>
+<li><strong>影响范围</strong>：读者若把网络地址当网关，Pod 无默认路由。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="cni-006--掩码硬编码-24">CNI-006 · 掩码硬编码 <code>/24</code></h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§14.2 行 2095</li>
+<li><strong>触发条件</strong>：subnet 非 /24</li>
+<li><strong>原因与证据边界</strong>：掩码硬编码 <code>/24</code></li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：从 IPAM 结果取前缀</li>
+<li><strong>影响范围</strong>：掩码硬编码 <code>/24</code></li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="cni-007--bridge-创建无锁">CNI-007 · bridge 创建无锁</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§14.2</li>
+<li><strong>触发条件</strong>：冷启动并发 ADD</li>
+<li><strong>原因与证据边界</strong>：bridge 创建无锁</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：加锁或忽略 EEXIST</li>
+<li><strong>影响范围</strong>：bridge 创建无锁</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="cni-008--缺-mtuhairpinpromisc">CNI-008 · 缺 MTU/hairpin/promisc</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§14.2</li>
+<li><strong>触发条件</strong>：需要特定 MTU 或 hairpin 的网络拓扑</li>
+<li><strong>原因与证据边界</strong>：MTU、hairpin、promisc 是网络配置选择，是否需要取决于拓扑和转发方式。</li>
+<li><strong>复现证据</strong>：对照 <code>bridge.go</code> 行 55–57、445–448、537–539</li>
+<li><strong>修复或实施建议</strong>：补齐</li>
+<li><strong>影响范围</strong>：hairpin 场景见 PROXY-002；调整 MTU 等参数应按虚拟网络链路验证。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="cni-009--ipam-的-netparsecidr-返回值数量错误">CNI-009 · IPAM 的 net.ParseCIDR 返回值数量错误</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：原文 §14.3 allocateIP，source-tutorial.md 第 2139 行附近</li>
+<li><strong>触发条件</strong>：构建 IPAM 片段</li>
+<li><strong>原因与证据边界</strong>：原文写 cidr, _ := net.ParseCIDR(subnet)；标准库函数返回 IP、*IPNet、error 三项。</li>
+<li><strong>复现证据</strong>：evidence/go/compile/ipam_snippet.go；delivery/user-space/ipam.log；delivery/go-parsecidr-api.log。</li>
+<li><strong>修复或实施建议</strong>：使用 _, cidr, err := net.ParseCIDR(subnet)，检查 err 后再读取网络。</li>
+<li><strong>影响范围</strong>：IPAM 原片段无法编译；修正 API 调用后才能验证分配逻辑。</li>
+<li><strong>验证状态</strong>：编译器拒绝</li>
+<li><strong>官方依据</strong>：Go net.ParseCIDR/IPNet.Contains API；IPv4 网段保留地址语义。</li>
+<li><strong>关联记录</strong>：CNI-005；PENDING-002</li>
+</ul>
+<h2 id="cni-010--ipam-分配循环没有排除-ipv4-广播地址">CNI-010 · IPAM 分配循环没有排除 IPv4 广播地址</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：原文 §14.3 allocateIP，source-tutorial.md 第 2139 行附近</li>
+<li><strong>触发条件</strong>：小网段分配到最后一个地址</li>
+<li><strong>原因与证据边界</strong>：修正 ParseCIDR 调用后，按普通 nextIP 和 .1 网关语义，cidr.Contains 仍接受广播地址。/30 的辅助探针在跳过 .1 后返回 .2 和 .3。</li>
+<li><strong>复现证据</strong>：audit/vm/ipam_probe.go；evidence/logs/delivery/ipam-reserved-address.log；/30 池的 .3 是广播地址。</li>
+<li><strong>修复或实施建议</strong>：排除 network/gateway/broadcast，校验网段并在无可分配地址时返回错误。</li>
+<li><strong>影响范围</strong>：小池耗尽前可能发出无效 Pod 地址；helper 语义和 ParseCIDR 修正已在探针头标注。</li>
+<li><strong>验证状态</strong>：用户态局部补齐复现</li>
+<li><strong>官方依据</strong>：Go net.ParseCIDR/IPNet.Contains API；IPv4 网段保留地址语义。</li>
+<li><strong>关联记录</strong>：CNI-005；PENDING-002</li>
+</ul>
+<h2 id="deploy-001--撤回等待新副本就绪属于滚动更新行为">DEPLOY-001 · 撤回：等待新副本就绪属于滚动更新行为</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.4 行 1899（<code>if newRS.Status.ReadyReplicas &gt; 0</code>）</li>
+<li><strong>触发条件</strong>：RS controller 慢/挂。</li>
+<li><strong>原因与证据边界</strong>：ReadyReplicas 来自 RS controller 是声明的组件协作。新副本尚未 Ready 时保留旧副本符合 maxUnavailable=0。</li>
+<li><strong>复现证据</strong>：evidence/go/rs/controllers_test.go::TestDeploymentWaitsForReadyBeforeScaleDown：先保留旧 RS=3；Ready=1 后缩至 2。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="deploy-002--updaters-错误未处理且原地修改返回的-rs">DEPLOY-002 · UpdateRS 错误未处理，且原地修改返回的 RS</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.4（<code>newRS.Spec.Replicas += inc; c.api.UpdateRS(newRS)</code>）</li>
+<li><strong>触发条件</strong>：<code>UpdateRS</code> 返回 409/500。</li>
+<li><strong>原因与证据边界</strong>：原文忽略 UpdateRS 返回值；当 FindOwnedRS 返回共享指针时还会污染本地 cache。</li>
+<li><strong>复现证据</strong>：<code>TestDeploymentMutatesCacheBeforeFailedUpdate</code> → <code>UpdateRS returned 409, yet the shared cached object now has replicas=1 (was 0)</code></li>
+<li><strong>修复或实施建议</strong>：<code>DeepCopy()</code> 后修改再写。</li>
+<li><strong>影响范围</strong>：写入失败后仍可能返回成功并使用未提交的副本数；缓存污染取决于辅助客户端的指针共享语义。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="doc-001--非可运行与每阶段可端到端运行并存">DOC-001 · “非可运行”与“每阶段可端到端运行”并存</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Low</li>
+<li><strong>原文位置</strong>：行 5 vs 行 214</li>
+<li><strong>触发条件</strong>：把阶段任务说明当作完整可执行代码</li>
+<li><strong>原因与证据边界</strong>：“非可运行”与“每阶段可端到端运行”并存</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：统一表述</li>
+<li><strong>影响范围</strong>：“非可运行”与“每阶段可端到端运行”并存</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="doc-002--5000-行估算不可核对">DOC-002 · 5000 行估算不可核对</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§1/§2/§4</li>
+<li><strong>触发条件</strong>：阅读或实现该处接口时</li>
+<li><strong>原因与证据边界</strong>：行数与百分比为教学性估算；小数舍入和分类口径需在正文交代。</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：采用数量级表述，或记录版本、计数范围与舍入规则。</li>
+<li><strong>影响范围</strong>：影响教学估算的可核对性，保留为编写建议。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="doc-003--4-与-19-组件列表略有出入">DOC-003 · §4 与 §19 组件列表略有出入</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Low</li>
+<li><strong>原文位置</strong>：§4/§19</li>
+<li><strong>触发条件</strong>：按组件清单组织项目</li>
+<li><strong>原因与证据边界</strong>：§4 与 §19 组件列表略有出入</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：对齐</li>
+<li><strong>影响范围</strong>：§4 与 §19 组件列表略有出入</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="doc-004--17-百分比-1001且-cloud-与-backcompat-重叠">DOC-004 · §17 百分比 100.1%，且 cloud 与 backcompat 重叠</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§17.14</li>
+<li><strong>触发条件</strong>：阅读或实现该处接口时</li>
+<li><strong>原因与证据边界</strong>：行数与百分比为教学性估算；小数舍入和分类口径需在正文交代。</li>
+<li><strong>复现证据</strong>：静态计算</li>
+<li><strong>修复或实施建议</strong>：采用数量级表述，或记录版本、计数范围与舍入规则。</li>
+<li><strong>影响范围</strong>：影响教学估算的可核对性，保留为编写建议。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="doc-005--18-trace-含未实现行为">DOC-005 · §18 trace 含未实现行为</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§18</li>
+<li><strong>触发条件</strong>：—</li>
+<li><strong>原因与证据边界</strong>：§18 trace 含未实现行为</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：同上</li>
+<li><strong>影响范围</strong>：§18 trace 含未实现行为</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：XC-007</li>
+</ul>
+<h2 id="doc-006--撤回旧审计用错误版本的行数评价原文">DOC-006 · 撤回：旧审计用错误版本的行数评价原文</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§19 / <code>SOURCES.txt</code></li>
+<li><strong>触发条件</strong>：把不同版本官方源码的行数作精确对照</li>
+<li><strong>原因与证据边界</strong>：旧的 415 行快照来自浮动分支；固定 client-go v0.29.0 为 295 行。教程未锁定版本，行数属于估算。</li>
+<li><strong>复现证据</strong>：evidence/research/VERSION_CORRECTION.md；queue.go 与 SOURCES.txt；旧快照留在 superseded/。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="doc-007--21-增量估算偏乐观">DOC-007 · §21 增量估算偏乐观</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§21</li>
+<li><strong>触发条件</strong>：—</li>
+<li><strong>原因与证据边界</strong>：行数与百分比为教学性估算；小数舍入和分类口径需在正文交代。</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：采用数量级表述，或记录版本、计数范围与舍入规则。</li>
+<li><strong>影响范围</strong>：影响教学估算的可核对性，保留为编写建议。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="doc-008--kind-get-kubeconfig-path-在-v0200-中已不存在">DOC-008 · kind get kubeconfig-path 在 v0.20.0 中已不存在</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Low</li>
+<li><strong>原文位置</strong>：§24.3</li>
+<li><strong>触发条件</strong>：按社区工具示例启动新环境</li>
+<li><strong>原因与证据边界</strong>：原文 §24.3 使用 kind get kubeconfig-path；固定 kind v0.20.0 实测返回 unknown command。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/kind-obsolete-command.log；kind-supported-command.log；固定 kind v0.20.0。</li>
+<li><strong>修复或实施建议</strong>：使用 kind get kubeconfig；按需要写到临时 kubeconfig 文件再设置 KUBECONFIG。</li>
+<li><strong>影响范围</strong>：原示例无法生成 kubeconfig；未创建集群，仅检查 CLI 解析。</li>
+<li><strong>验证状态</strong>：普通 CLI 复现</li>
+<li><strong>官方依据</strong>：https://github.com/kubernetes-sigs/kind/tree/v0.20.0/pkg/cmd/kind/get</li>
+</ul>
+<h2 id="eps-001--service-删除分支解引用-nil每删一个-service-就-panic">EPS-001 · Service 删除分支解引用 nil，每删一个 Service 就 panic</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§13.5 行 1929–1931 （<code>if svc == nil { return c.api.DeleteEndpoints(svc.Namespace, svc.Name) }</code>）</li>
+<li><strong>触发条件</strong>：删除任何 Service。</li>
+<li><strong>原因与证据边界</strong>：在 nil 检查分支里使用 <code>svc</code>。</li>
+<li><strong>复现证据</strong>：<code>TestEndpointsNilDeref</code> → <code>reconcile(nil service) panicked: runtime error: invalid memory address or nil pointer dereference</code></li>
+<li><strong>修复或实施建议</strong>：把 key 的 namespace/name 保留在局部变量，或从 <code>svcKey</code> 解析。</li>
+<li><strong>影响范围</strong>：Endpoints 永不清理；proxy 继续向已删除 Pod 转发。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="eps-002--endpoints-事件接线及命名端口解析未展开">EPS-002 · Endpoints 事件接线及命名端口解析未展开</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.5 <code>reconcile(svcKey)</code>（只接受 Service key）</li>
+<li><strong>触发条件</strong>：Pod 变 Ready/NotReady；<code>targetPort</code> 为字符串。</li>
+<li><strong>原因与证据边界</strong>：原文文字声明监听 Service 和 Pod，但只给 reconcile；数字 TargetPort 复制是有效行为。</li>
+<li><strong>复现证据</strong>：<code>TestNumericTargetPortIsCopied</code> → <code>endpoints port written as TargetPort=8080 directly; no named-port lookup</code></li>
+<li><strong>修复或实施建议</strong>：给出 Pod 事件到 Service key 的索引，以及支持的 targetPort 类型。</li>
+<li><strong>影响范围</strong>：缺少接线实现时就绪变化可能不触发重算；命名端口是否支持须由契约指定。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="informer-001--正常断线触发-close-of-closed-channel-panic">INFORMER-001 · 正常断线触发 <code>close of closed channel</code> panic</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§13.1 行 1619–1665（<code>close(inf.synced)</code> 在 1629；<code>case "ERROR": inf.synced = make(...)</code> 在 1654； <code>relist:</code> 标签在 1661）</li>
+<li><strong>触发条件</strong>：watch channel 正常关闭（服务端超时、TCP RST、apiserver 重启、kv <code>cancel()</code>）。</li>
+<li><strong>原因与证据边界</strong>：只有 <code>ERROR</code> 分支重置 <code>synced</code>；正常关闭落到 <code>relist:</code> 回到顶部， 再次 <code>close</code> 已关闭 channel。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/informer/informer_test.go::TestNormalWatchClosePanics</code> → <code>CONFIRMED INFORMER-001: routine watch close panicked the informer: close of closed channel</code></li>
+<li><strong>修复或实施建议</strong>：<code>synced</code> 用 <code>sync.Once</code>/<code>atomic.Bool</code>；所有退出路径走同一个 <code>relist()</code>， 且 <code>relist</code> 先取消旧 watch；重连加指数退避。</li>
+<li><strong>影响范围</strong>：controller-manager 的所有 controller 一次网络抖动即停摆。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：client-go <code>reflector.go::ListAndWatch</code>（<code>research/reflector.go</code> 行 321–358）、 <code>watchHandler</code> 行 702–802、<code>isExpiredError</code> 行 861–867。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="informer-002--relist-后缓存收敛但缺少删除通知">INFORMER-002 · relist 后缓存收敛，但缺少删除通知</h2>
+<ul>
+<li><strong>分类</strong>：教学简化</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.1 行 1624–1628（<code>inf.cache.Replace(objs)</code> 在 1624，随后 1626–1628 无条件 <code>h.OnAdd(o)</code>）；原文声明在 §13.1 末尾（行 1666）。</li>
+<li><strong>触发条件</strong>：断线（watch 关闭或 410）后重新 LIST，且断线期间有对象被删除。</li>
+<li><strong>原因与证据边界</strong>：辅助 Store.Replace 安装新 map，Run 只向 handler 重放 OnAdd；原文已声明后续加入 diff。</li>
+<li><strong>复现证据</strong>：evidence/go/informer/informer_test.go::TestRelistOmitsDeleteNotification：缓存长度 1、b 不存在、OnDelete=0。</li>
+<li><strong>修复或实施建议</strong>：在替换缓存的上层生成 Add/Update/Delete 差异；官方 DeltaFIFO.Replace 在内部生成删除 delta，ThreadSafeStore.Replace 返回 void。</li>
+<li><strong>影响范围</strong>：依赖删除通知的 handler 未被这次 relist 唤醒；副本永久不足须另做集成验证。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：client-go v0.29.0 <code>thread_safe_store.go</code> 行 267 <code>Replace(items map[string]interface{}, resourceVersion string)</code> <strong>不返回删除集</strong>； <code>delta_fifo.go</code> 行 623–702 的 <code>DeltaFIFO.Replace</code> 返回 <code>error</code>，对不在新 list 中的 旧 key 排队 <code>Deleted</code> delta 并携带 <code>DeletedFinalStateUnknown</code> tombstone。 旧表述“client-go 的 Replace 返回删除集”是把两层混为一谈，已撤回。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="informer-003--relist-把全部对象重放为-onadd">INFORMER-003 · relist 把全部对象重放为 OnAdd</h2>
+<ul>
+<li><strong>分类</strong>：教学简化</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.1 行 1626–1631</li>
+<li><strong>触发条件</strong>：每次 relist。</li>
+<li><strong>原因与证据边界</strong>：与 INFORMER-002 同一段原文明确声明的简化：对 relist 全部调用 OnAdd。</li>
+<li><strong>复现证据</strong>：<code>TestRelistReplaysAllAsAdd</code> → <code>first sync adds=2; after one relist adds=4 updates=0 deletes=0</code></li>
+<li><strong>修复或实施建议</strong>：差异化（新对象 OnAdd，变化对象 OnUpdate，消失对象 OnDelete）。</li>
+<li><strong>影响范围</strong>：handler 会重复收到添加通知；以 key 重新读取当前状态的 reconcile 应保持幂等。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="informer-004--relist-泄漏旧-watch">INFORMER-004 · relist 泄漏旧 watch</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.1 <code>goto relist</code>（行 1656–1663）</li>
+<li><strong>触发条件</strong>：每次 relist。</li>
+<li><strong>原因与证据边界</strong>：旧 channel 无 close/cancel。</li>
+<li><strong>复现证据</strong>：<code>TestWatchLeakOnRelist</code> → <code>watches before relist=1 after=2</code></li>
+<li><strong>修复或实施建议</strong>：relist 前取消旧 watch。</li>
+<li><strong>影响范围</strong>：server 端 subscriber 与 goroutine 泄漏。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="informer-005--ctx-不参与退出">INFORMER-005 · <code>ctx</code> 不参与退出</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§13.1 行 1619</li>
+<li><strong>触发条件</strong>：取消 ctx</li>
+<li><strong>原因与证据边界</strong>：<code>ctx</code> 不参与退出</li>
+<li><strong>复现证据</strong>：<code>TestContextDoesNotStopRun</code></li>
+<li><strong>修复或实施建议</strong>：主循环 select ctx.Done()</li>
+<li><strong>影响范围</strong>：<code>ctx</code> 不参与退出</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="informer-006--infsynced-无同步读写">INFORMER-006 · <code>inf.synced</code> 无同步读写</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§13.1 行 1629/1656</li>
+<li><strong>触发条件</strong>：并发 WaitForCacheSync</li>
+<li><strong>原因与证据边界</strong>：Run 在 ERROR 后替换 synced 字段；WaitForCacheSync 的同步实现未给出。辅助 WaitForCacheSync 直接读取该字段时存在竞态。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/user-space/expected-race.log；evidence/check_expected_race.py；隔离临时 module 中运行实际 Informer.Run 与辅助 WaitForCacheSync，有限次重连并检查 WARNING: DATA RACE。</li>
+<li><strong>修复或实施建议</strong>：<code>atomic.Bool</code>/<code>sync.Once</code></li>
+<li><strong>影响范围</strong>：<code>inf.synced</code> 无同步读写</li>
+<li><strong>验证状态</strong>：用户态适配器竞态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="kubelet-001--sandboxid-与-containerid-混淆">KUBELET-001 · sandboxID 与 containerID 混淆</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§11.3 行 1290–1300；<code>Kubelet</code> 结构体 §11.2 行 1195–1206 无 sandbox 字段</li>
+<li><strong>触发条件</strong>：同一 Pod 的第二次 <code>syncPod</code>。</li>
+<li><strong>原因与证据边界</strong>：<code>sandbox</code> 是局部变量，第二次从 <code>running[0].ID</code>（容器 ID）反推。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/kubelet/kubelet_test.go::TestSandboxIDConfusedWithContainerID</code> → <code>RunPodSandbox returned "sandbox-p1" ... syncPod sets sandboxID = running[0].ID = "ctr-app"</code></li>
+<li><strong>修复或实施建议</strong>：Kubelet 维护 <code>podUID -&gt; sandboxID</code>，或用 CRI 的 <code>PodSandboxStatus</code> 按 pod 反查。</li>
+<li><strong>影响范围</strong>：<code>StopPodSandbox</code> 作用在错误对象；Pod 删除/重建破坏其他 Pod 的网络。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：CRI <code>services.go</code>：<code>ContainerStatus</code> 行 46、<code>PodSandboxStatus</code> 行 80。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kubelet-002--cni-add-只在新建-sandbox-时调用重启后永不重连网络">KUBELET-002 · CNI ADD 只在新建 sandbox 时调用，重启后永不重连网络</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§11.3 行 1295（<code>podIP, err := k.cni.Add(...)</code> 位于 <code>if sandbox == nil</code> 块内）</li>
+<li><strong>触发条件</strong>：kubelet 重启但 sandbox 仍在；或 sandbox 创建成功、CNI 失败后重试。</li>
+<li><strong>原因与证据边界</strong>：CNI 不是每次 sync 幂等调用；也没有 CNI DEL 的调用点。</li>
+<li><strong>复现证据</strong>：<code>TestCNIAddNotRetried</code> → <code>with a pre-existing sandbox, CNI.Add calls = 0</code></li>
+<li><strong>修复或实施建议</strong>：每次 sync 调 <code>network.SetUpPod</code>；CNI 规范要求 ADD 幂等。</li>
+<li><strong>影响范围</strong>：Pod 永久无 IP；只有重建 sandbox 才恢复。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kubelet-003--init-container-与应用容器同时启动">KUBELET-003 · init container 与应用容器同时启动</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§11.3 行 1305–1325（<code>desired := append(InitContainers, Containers...)</code> 后同一循环启动）</li>
+<li><strong>触发条件</strong>：任何带 init container 的 Pod。</li>
+<li><strong>原因与证据边界</strong>：没有分阶段、没有等待退出码。</li>
+<li><strong>复现证据</strong>：<code>TestInitContainersStartInParallel</code> → <code>[init-db=RUNNING init-schema=RUNNING app=RUNNING] are RUNNING at once</code></li>
+<li><strong>修复或实施建议</strong>：分两阶段；init 阶段逐个等待 EXITED(0) 才继续。</li>
+<li><strong>影响范围</strong>：依赖初始化的应用（DB schema、配置生成）必然失败。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kubelet-004--restartpolicy-只实现-always-的一半">KUBELET-004 · restartPolicy 只实现 Always 的一半</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§11.3 行 1320（<code>if rc.State == "EXITED" &amp;&amp; pod.Spec.RestartPolicy == "Always"</code>）</li>
+<li><strong>触发条件</strong>：<code>OnFailure</code> 且退出码非 0；或 <code>Always</code> 下成功退出的 init container。</li>
+<li><strong>原因与证据边界</strong>：无退出码判断；init 与 app 混在同一循环。</li>
+<li><strong>复现证据</strong>：<code>TestRestartPolicyOnFailureIgnored</code>（子用例 a 与 b）→ <code>OnFailure, EXITED(1) ... 1 'app' containers</code>（未重启）； 子用例 b：<code>init container EXITED(0) under Always was restarted</code> （AUDIT 日志中标注为 <code>KUBELET-004（子用例 b）</code>）</li>
+<li><strong>修复或实施建议</strong>：按 <code>restartPolicy</code> + exitCode + 容器类型分支。</li>
+<li><strong>影响范围</strong>：故障不重启；成功的 init 无限重启。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kubelet-005--pleg-不上报整个-pod-消失">KUBELET-005 · PLEG 不上报“整个 pod 消失”</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§11.4 行 1385（<code>for podID, states := range newObs</code>）</li>
+<li><strong>触发条件</strong>：sandbox 被外部删除。</li>
+<li><strong>原因与证据边界</strong>：只遍历新观测；旧观测里独有的 pod 被忽略。</li>
+<li><strong>复现证据</strong>：<code>TestPLEGDoesNotReportVanishedPod</code> → <code>newObs=map[] events=[]</code>（旧观测有 p1/c1）</li>
+<li><strong>修复或实施建议</strong>：遍历新旧并集（<code>getContainersFromPods(oldPod, newPod)</code>）。</li>
+<li><strong>影响范围</strong>：Pod worker 永不醒来；Pod 卡在 Running。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：<code>generic.go</code> 行 249–262（新旧并集循环）、行 552/560（<code>getOld</code>/<code>getCurrent</code>）、 行 363–387（<code>getContainersFromPods</code>）。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kubelet-006--updatepodstatus-的-http-写入范围未给出">KUBELET-006 · UpdatePodStatus 的 HTTP 写入范围未给出</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§11.5 行 1425–1430（<code>pod.Status = *status; s.api.UpdatePodStatus(pod)</code>）</li>
+<li><strong>触发条件</strong>：任何 status 更新。</li>
+<li><strong>原因与证据边界</strong>：向 UpdatePodStatus 传入完整 Pod 参数不决定其 HTTP 路由与字段范围；覆盖 spec 是 fake API 全对象替换的假设。</li>
+<li><strong>复现证据</strong>：<code>TestWholeObjectStatusAdapterCanOverwriteSpec</code> → <code>RestartPolicy="Never" ... the status write sends the whole object</code></li>
+<li><strong>修复或实施建议</strong>：定义 /status 的字段白名单和 CAS，补跨客户端并发写测试。</li>
+<li><strong>影响范围</strong>：不安全的辅助适配器会覆盖并发 spec；真实 status API 的结果待实现验证。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kubelet-007--node-注册与状态上报代码缺失">KUBELET-007 · Node 注册与状态上报代码缺失</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§11.2 Kubelet 结构体（行 1195–1206）无 node 字段；全文无 Node 写路径； §18.1 行 2478 却打印 <code>node registered, allocatable cpu=4 mem=8Gi</code></li>
+<li><strong>触发条件</strong>：每次启动。</li>
+<li><strong>原因与证据边界</strong>：节点注册/容量/Ready 心跳未在片段中给出；结构测试检查的是辅助 Kubelet 类型。</li>
+<li><strong>复现证据</strong>：静态：grep 全文无 <code>POST /api/v1/nodes</code>、无 <code>UpdateNodeStatus</code>。 与 SCHED-001 的执行结果联合验证（0 容量 → panic）。</li>
+<li><strong>修复或实施建议</strong>：启动时注册 Node，周期更新容量与健康；说明失联判定与恢复。</li>
+<li><strong>影响范围</strong>：控制面需要节点来源；片段缺失无法推出手工 Node 的容量恒为 0。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-001--watch-注册与订阅循环之间静默丢事件">KV-001 · Watch 注册与订阅循环之间静默丢事件</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§8.4 行 740–790（以函数名定位原文）</li>
+<li><strong>触发条件</strong>：Watch 释放锁后、subscriberLoop 取得锁前完成一次写入；用测试 hook 将写入安排到该窗口，可确定复现漏事件。</li>
+<li><strong>原因与证据边界</strong>：catchup 用 <code>startRev</code> 过滤，订阅循环却用 <code>currentRev</code> 初始化游标。 窗口内写入的事件 revision 落在 <code>seen</code> 之前，永不投递。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/kv/kv_test.go::TestLostEventOnSubscribeRace</code> （在 <code>Unlock</code> 处插桩写入 <code>/p/b</code>）→ <code>CONFIRMED KV-001: event for /p/b (rev=2) was silently lost; watch asked for startRev=0 but subscriberLoop began at seen=2</code></li>
+<li><strong>修复或实施建议</strong>：游标从 <code>startRev</code>（或最后一次重放到的 revision）推进，不读 <code>currentRev</code>； 把 catchup 与循环合并，在持锁状态下连续推进 <code>nextRev</code>。</li>
+<li><strong>影响范围</strong>：informer 缓存永久分叉，直到下一次 relist；所有 controller 与 scheduler 受影响。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：etcd Watch <code>start_revision</code> 连续投递 <a href="https://etcd.io/docs/v3.5/learning/api/">https://etcd.io/docs/v3.5/learning/api/</a>； K8s list-then-watch 无缝隙 <a href="https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes">https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes</a></li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-002--compact-在全部历史可压缩时不裁剪却推进-compactrev">KV-002 · Compact 在“全部历史可压缩”时不裁剪，却推进 compactRev</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§8.4 行 820–833（<code>cut := 0</code>；<code>for ... { if ev.Revision &gt; rev { cut = i; break } }</code>）</li>
+<li><strong>触发条件</strong>：<code>Compact(rev)</code> 满足所有 <code>ev.Revision &lt;= rev</code>。</li>
+<li><strong>原因与证据边界</strong>：<code>break</code> 从不执行，<code>cut</code> 保持 0，<code>s.history = s.history[0:]</code> 等于不裁剪； 同时 <code>compactRev</code> 已更新，之后 <code>startRev &lt;= compactRev</code> 的 watch 被拒。</li>
+<li><strong>复现证据</strong>：<code>TestCompactDoesNotTrimHistory</code> → <code>history len before=5 after Compact(currentRev=5)=5 compactRev=5</code></li>
+<li><strong>修复或实施建议</strong>：<code>cut := len(s.history)</code> 作为初值，或反向扫描；只有确认真实裁剪后才推进 <code>compactRev</code>。</li>
+<li><strong>影响范围</strong>：内存无界增长（与 KV-009 叠加）；“该拒绝的没拒绝”+“该删的没删”， 410 语义完全错位。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-003--cancel-不关-channel不唤醒-goroutine">KV-003 · cancel 不关 channel、不唤醒 goroutine</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§8.4 行 779–784（<code>close(sub.done)</code>，无 <code>Broadcast</code>、无 <code>close(sub.ch)</code>）</li>
+<li><strong>触发条件</strong>：调用 <code>cancel()</code>（HTTP 请求结束）。</li>
+<li><strong>原因与证据边界</strong>：<code>subscriberLoop</code> 停在 <code>cond.Wait()</code>，只有无关写入才会唤醒； 消费者 <code>for range ch</code> 永不退出。</li>
+<li><strong>复现证据</strong>：<code>TestCancelDoesNotCloseChannelOrWakeLoop</code> → <code>channel still open 300ms after cancel(); for range ch consumers block forever</code></li>
+<li><strong>修复或实施建议</strong>：<code>cancel</code> 里 <code>close(sub.ch)</code> 并 <code>Broadcast</code>；或每 subscriber 一个 done channel + select 在同一循环里。</li>
+<li><strong>影响范围</strong>：每断开一个 watch 泄漏一个 handler goroutine 与一个 subscriber。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-004--startrev0-重放全部历史与-93-契约冲突">KV-004 · <code>startRev=0</code> 重放全部历史，与 §9.3 契约冲突</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§8.4 行 740–775；§9.3 行 1042–1044；§10.2 行 1080</li>
+<li><strong>触发条件</strong>：watch 无 <code>resourceVersion</code> 参数，或显式 <code>"0"</code>。</li>
+<li><strong>原因与证据边界</strong>：两者都 <code>ParseInt</code> 成 0，<code>Watch</code> 把 0 当作“全部历史”。</li>
+<li><strong>复现证据</strong>：<code>TestWatchZeroReplaysAllHistory</code>（3 个历史事件全部投递）； <code>TestWatchRV0ReplaysHistory</code>（无参数 → 4 个事件）。</li>
+<li><strong>修复或实施建议</strong>：区分三态（unset / "0" / 具体值），见 <code>api-concepts</code>。</li>
+<li><strong>影响范围</strong>：新 informer 收到“已存在对象”的 ADDED 后又收到历史 MODIFIED， 与 <code>MostRecent</code> 语义混叠；重复处理。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-005--delete-事件不带值客户端收到空对象">KV-005 · DELETE 事件不带值，客户端收到空对象</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§8.4 行 711（<code>Event{Type:"DELETE", Key, Revision, PrevRev}</code>，无 Value）； §10.2 行 1118–1126（<code>json.Unmarshal(ev.Value, obj)</code> 错误被忽略）</li>
+<li><strong>触发条件</strong>：任何删除的 watch 通知。</li>
+<li><strong>原因与证据边界</strong>：没有 pre-delete 快照；教程注释承认“could maintain a side map ... For brevity”。</li>
+<li><strong>复现证据</strong>：<code>TestDeleteEventHasNoValue</code> + <code>TestDeleteWatchFrameIsEmptyObject</code> → <code>DELETED frame = {"object":{"metadata":{"name":"","namespace":""...}},"type":"DELETED"}</code></li>
+<li><strong>修复或实施建议</strong>：<code>Event</code> 带 <code>PrevValue</code>；或 apiserver 层维护 side map。</li>
+<li><strong>影响范围</strong>：informer 无法按 key 删除缓存；DELETED 处理失效。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：etcd <code>prev_kv</code>。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-006--相同值写入也推进-revision">KV-006 · 相同值写入也推进 revision</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§8.3 行 670–690</li>
+<li><strong>触发条件</strong>：控制器重写未变的 status</li>
+<li><strong>原因与证据边界</strong>：相同值写入也推进 revision</li>
+<li><strong>复现证据</strong>：<code>TestIdenticalPutBumpsRevision</code>（测量，非缺陷断言）</li>
+<li><strong>修复或实施建议</strong>：apiserver/controller 写入前比较，未变则跳过；不要为此改 KV</li>
+<li><strong>影响范围</strong>：相同值写入也推进 revision</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="kv-007--event-别名调用方-byte-slice">KV-007 · Event 别名调用方 byte slice</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§8.3 行 684</li>
+<li><strong>触发条件</strong>：调用方复用 buffer</li>
+<li><strong>原因与证据边界</strong>：Event 别名调用方 byte slice</li>
+<li><strong>复现证据</strong>：<code>TestEventAliasesCallerValue</code></li>
+<li><strong>修复或实施建议</strong>：入 history 前 copy</li>
+<li><strong>影响范围</strong>：Event 别名调用方 byte slice</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="kv-008--range-的遍历顺序未定义">KV-008 · Range 的遍历顺序未定义</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§8.3 行 720</li>
+<li><strong>触发条件</strong>：客户端依赖 Range 返回顺序</li>
+<li><strong>原因与证据边界</strong>：原文 Range 使用 map，未声明有序契约；排序是可选的 API 设计。</li>
+<li><strong>复现证据</strong>：evidence/go/kv/kv_test.go::TestRangeMembershipWithUnspecifiedOrder</li>
+<li><strong>修复或实施建议</strong>：文档声明顺序；需要稳定分页时按 key 排序。</li>
+<li><strong>影响范围</strong>：依赖顺序的客户端和分页器需单独规定契约。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="kv-009--trimhistory-的自动压缩实现缺失">KV-009 · trimHistory 的自动压缩实现缺失</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§8.4 行 685、713（调用）；全文无定义</li>
+<li><strong>触发条件</strong>：持续写入。</li>
+<li><strong>原因与证据边界</strong>：原文调用 trimHistory 但未给定义；审计转录用 no-op 补齐编译。</li>
+<li><strong>复现证据</strong>：evidence/go/kv/kv_test.go::TestNoOpTrimRetainsHundredThousandWrites；evidence/logs/delivery/user-space/go-kv.log；十万次写入保留十万个事件。</li>
+<li><strong>修复或实施建议</strong>：定义保留窗口与 compactRev 更新方式，给出有界内存测试。</li>
+<li><strong>影响范围</strong>：no-op 辅助实现的历史随写入数增长；原文缺少 trimHistory 与持久化恢复实现，作为第二阶段实施任务。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="kv-010--无多键事务clusterip-分配非原子">KV-010 · 无多键事务，ClusterIP 分配非原子</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§8.1 行 596；§9.2 defaulting</li>
+<li><strong>触发条件</strong>：并发创建 Service</li>
+<li><strong>原因与证据边界</strong>：无多键事务，ClusterIP 分配非原子</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：在 docs 中声明；或用预留键 CAS</li>
+<li><strong>影响范围</strong>：无多键事务，ClusterIP 分配非原子</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="proto-001--proto-片段缺少引用的消息定义">PROTO-001 · proto 片段缺少引用的消息定义</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§7.1 行 443–523</li>
+<li><strong>触发条件</strong>：<code>protoc</code> 编译。</li>
+<li><strong>原因与证据边界</strong>：生成器拒绝未定义类型；未定义名称和错误出现次数采用 runner 的实时计数。</li>
+<li><strong>复现证据</strong>：<code>bash research/proto_check.sh</code> → <code>undefined names: 29</code>，<code>protoc exit=1</code>（<code>evidence/logs/verification-proto-check.log</code>）。 这是<strong>编译器/生成器拒绝该契约文件</strong>的直接证据，不是“完整 CRI 服务端运行失败”。</li>
+<li><strong>修复或实施建议</strong>：补全 message，或直接采用 <code>k8s.io/cri-api</code> 的 proto 子集；修正 8/14 的计数。</li>
+<li><strong>影响范围</strong>：读者无法生成客户端/服务端桩代码，“8-method CRI”只是示意。</li>
+<li><strong>验证状态</strong>：生成器拒绝</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proto-002--containerstatus-与-containerstatusresponse-混淆">PROTO-002 · <code>ContainerStatus</code> 与 <code>ContainerStatusResponse</code> 混淆</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§7.1</li>
+<li><strong>触发条件</strong>：读者生成桩</li>
+<li><strong>原因与证据边界</strong>：<code>ContainerStatus</code> 与 <code>ContainerStatusResponse</code> 混淆</li>
+<li><strong>复现证据</strong>：静态：<code>ContainerStatusResponse</code> 无定义</li>
+<li><strong>修复或实施建议</strong>：明确 Response 定义</li>
+<li><strong>影响范围</strong>：<code>ContainerStatus</code> 与 <code>ContainerStatusResponse</code> 混淆</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="proto-003--podnamespaceconfigshare_net-命名误导">PROTO-003 · <code>PodNamespaceConfig.share_net</code> 命名误导</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§7.1</li>
+<li><strong>触发条件</strong>：hostNetwork</li>
+<li><strong>原因与证据边界</strong>：<code>PodNamespaceConfig.share_net</code> 命名误导</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：用 <code>network: NODE</code></li>
+<li><strong>影响范围</strong>：<code>PodNamespaceConfig.share_net</code> 命名误导</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="proxy-001--三条内核前置条件未声明缺任一即不通">PROXY-001 · 三条内核前置条件未声明，缺任一即不通</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§15.1/§15.2 全文；<code>ip_forward</code>、<code>br_netfilter</code>、 <code>bridge-nf-call-iptables</code>、<code>MASQUERADE</code> 均未出现</li>
+<li><strong>触发条件</strong>：默认 Debian/Ubuntu 主机（<code>ip_forward=0</code>、<code>br_netfilter</code> 未加载）。</li>
+<li><strong>原因与证据边界</strong>：桥接路径需要 <code>br_netfilter</code> 才走 iptables；跨网段需要转发； hairpin/外部需要 SNAT。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：启动时检查并设置三个 sysctl/模块，缺失则明确报错；或在使用前提中写明。</li>
+<li><strong>影响范围</strong>：读者按教程操作会得到“规则装了但不通”的状态，极难诊断。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：kube-proxy 的 <code>KUBE-MARK-MASQ</code>（<code>research/proxier.go</code> 链定义行 68、71； 规则生成行 876–902；<code>-j KUBE-MARK-MASQ</code> 跳转行 1227 起）。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proxy-002--hairpinpodvip自身不通">PROXY-002 · hairpin（Pod→VIP→自身）不通</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§15.1/§15.2（无 MASQUERADE）；§14.5 自认 bridge 插件需要 hairpin mode， 但 §14.2 未实现</li>
+<li><strong>触发条件</strong>：Service 的唯一/被选 endpoint 是发起请求的 Pod。</li>
+<li><strong>原因与证据边界</strong>：DNAT 到自身 IP，缺少 SNAT/masquerade 与 veth hairpin。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：加 <code>KUBE-MARK-MASQ</code> + <code>KUBE-POSTROUTING</code>；CNI 设置 <code>hairpinMode</code>。</li>
+<li><strong>影响范围</strong>：单副本 Service 自访问失败；常见于健康检查、sidecar。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proxy-003--多端口-service-的-sep-链-dnat-不带---dport流量串线">PROXY-003 · 多端口 Service 的 SEP 链 DNAT 不带 <code>--dport</code>，流量串线</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§15.2（<code>-A SEP -p &lt;proto&gt; -j DNAT --to-destination IP:&lt;targetPort&gt;</code>）</li>
+<li><strong>触发条件</strong>：Service 有多个端口。</li>
+<li><strong>原因与证据边界</strong>：DNAT 只匹配协议。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：加 <code>--dport &lt;svcPort&gt;</code>。</li>
+<li><strong>影响范围</strong>：多端口 Service 完全错误。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proxy-004--iptables-调用链不能编译规则清理需区分链是否被声明">PROXY-004 · iptables 调用链不能编译；规则清理需区分链是否被声明</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§15.2 行 2258–2259</li>
+<li><strong>触发条件</strong>：编译；以及重复 reconcile。</li>
+<li><strong>原因与证据边界</strong>：Run 返回 error，没有 WithStdin 方法；--noflush 下声明的链重建，未声明的链保留。</li>
+<li><strong>复现证据</strong>：<code>evidence/logs/compile-snippets.log</code> → <code>exec.Command(...).Run().WithStdin undefined (type error has no field or method WithStdin)</code>； guest <code>proxy_focused2.sh</code> EXP6 显示声明过的链确实被清空（<code>jumps=1</code>）， 但未声明的链保留（PROXY-005）。</li>
+<li><strong>修复或实施建议</strong>：给 exec.Cmd 设置 Stdin 后 Run；跟踪并删除已失效的链。</li>
+<li><strong>影响范围</strong>：原代码调用链编译失败；链残留另见 PROXY-005，--noflush 自身不等同于追加。</li>
+<li><strong>验证状态</strong>：编译器拒绝</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proxy-005--service-删除后无引用的旧链残留">PROXY-005 · Service 删除后无引用的旧链残留</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§15.2 的 reconcile（只为存在的 Service 生成链，从不删除）</li>
+<li><strong>触发条件</strong>：删除 Service 或 Endpoints。</li>
+<li><strong>原因与证据边界</strong>：<code>--noflush</code> + 只声明现存链；消失的链没有清理路径。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：维护 <code>serviceMap</code>，对消失的 Service 显式 <code>-F</code>/<code>-X</code> 其链； 或每次全量 flush+restore（会短暂中断转发）。</li>
+<li><strong>影响范围</strong>：资源泄漏；顶层跳转已被清除，现有日志未证明已删除 Service 仍可访问。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proxy-006--hash-派生链名的约束待定义">PROXY-006 · hash 派生链名的约束待定义</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§15.2 行 2223、2239（<code>svcChain := "KUBE-SVC-" + hash(...)</code>，<code>hash</code> 未定义）</li>
+<li><strong>触发条件</strong>：Service 的 namespace/name 较长，或 <code>hash</code> 实现为 base64 等非 hex 编码。</li>
+<li><strong>原因与证据边界</strong>：原文未给 hash 函数，具体长度、字符和碰撞策略取决于补齐实现。</li>
+<li><strong>复现证据</strong>：静态：<code>KUBE-SVC-</code>(9) + 16 位 hex = 25（勉强）； 若 hash 为 20 字节 base64 则必然超限。常规模板（namespace 前缀）会直接失败。</li>
+<li><strong>修复或实施建议</strong>：固定长度 hex/数字哈希并截断到 28 以内，启动时校验。</li>
+<li><strong>影响范围</strong>：不安全实现会遇到链名冲突或非法参数；本条记录需要满足的接口约束。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="proxy-007--链名-hash-的碰撞处理待定义">PROXY-007 · 链名 hash 的碰撞处理待定义</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§15.2</li>
+<li><strong>触发条件</strong>：两个 Service 同 hash</li>
+<li><strong>原因与证据边界</strong>：原文未给 hash 函数，具体长度、字符和碰撞策略取决于补齐实现。</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：碰撞时加序号</li>
+<li><strong>影响范围</strong>：不安全实现会遇到链名冲突或非法参数；本条记录需要满足的接口约束。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="proxy-008--无-conntrack-清理">PROXY-008 · 无 conntrack 清理</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§15 全文</li>
+<li><strong>触发条件</strong>：endpoint 变化</li>
+<li><strong>原因与证据边界</strong>：无 conntrack 清理</li>
+<li><strong>复现证据</strong>：对照 <code>proxier.go</code> 行 1566 <code>conntrack.CleanStaleEntries</code></li>
+<li><strong>修复或实施建议</strong>：删除旧 endpoint 的连接</li>
+<li><strong>影响范围</strong>：无 conntrack 清理</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="queue-001--addratelimited-永不重试失败即丢">QUEUE-001 · AddRateLimited 永不重试（失败即丢）</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§13.2 行 1695–1701（注释“A background goroutine ...”——全文无此 goroutine）</li>
+<li><strong>触发条件</strong>：任何 reconcile 返回 error。</li>
+<li><strong>原因与证据边界</strong>：<code>delayed[key]</code> 只写不读；<code>Get()</code> 只看 <code>queue</code>；<code>Done()</code> 只在 <code>dirty</code> 命中时重排。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/queue/queue_test.go::TestAddRateLimitedNeverRetries</code>（等 3.5s）→ <code>after AddRateLimited+Done the key is in neither queue nor dirty; 3.5s elapsed, queue len still 0</code></li>
+<li><strong>修复或实施建议</strong>：实现 <code>waitingLoop</code>（<code>time.Timer</code> 指向最早到期项），到期 <code>Add</code>； 或直接用 client-go 的 <code>workqueue</code> 库。</li>
+<li><strong>影响范围</strong>：§13.2 宣称的四条不变量之一（失败重试）完全不成立；所有 controller 失去自愈。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：client-go <code>delaying_queue.go</code>：<code>AddAfter</code> 行 205–224、<code>waitingLoop</code> 行 232–308。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="queue-002--delayed-map-只增不减">QUEUE-002 · delayed map 只增不减</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.2 行 1698（<code>q.delayed[key] = ...</code>，无删除路径）</li>
+<li><strong>触发条件</strong>：多次失败。</li>
+<li><strong>原因与证据边界</strong>：无消费者，<code>Forget</code> 只被成功路径调用。</li>
+<li><strong>复现证据</strong>：<code>TestBackoffFirstStepAndLeak</code> → <code>100 failures on 26 keys leave DelayedLen=26</code></li>
+<li><strong>修复或实施建议</strong>：与 QUEUE-001 一起修（消费者到期即删）。</li>
+<li><strong>影响范围</strong>：内存泄漏；与 QUEUE-001 叠加使重试永不发生。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="queue-003--无-shutdownget-的-quit-恒为-false">QUEUE-003 · 无 ShutDown，<code>Get</code> 的 quit 恒为 false</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.2 行 1704–1716（<code>return key, false</code>）；类型无 <code>ShutDown</code></li>
+<li><strong>触发条件</strong>：进程退出/controller 停止。</li>
+<li><strong>原因与证据边界</strong>：缺少生命周期 API。</li>
+<li><strong>复现证据</strong>：<code>TestQuitIsAlwaysFalseAndNoShutdown</code> → <code>a worker parked in Get() cannot be released</code></li>
+<li><strong>修复或实施建议</strong>：加 <code>ShutDown</code>/<code>ShutDownWithDrain</code>，shutdown 后 <code>Get</code> 返回 true。</li>
+<li><strong>影响范围</strong>：所有 controller 的主循环无法退出；goroutine 泄漏。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="queue-004--撤回新事件触发-dirty-重排符合官方语义">QUEUE-004 · 撤回：新事件触发 dirty 重排符合官方语义</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.2 行 1680–1695</li>
+<li><strong>触发条件</strong>：失败期间有新事件</li>
+<li><strong>原因与证据边界</strong>：Add 在 processing 期间记录 dirty，Done 立即重排；AddRateLimited 的延时路径独立存在。</li>
+<li><strong>复现证据</strong>：evidence/go/queue/queue_test.go::TestDirtyRequeueAlignmentWithClientGo；research/queue.go 的 Add/Done；research/rate_limiting_queue.go 的 AddRateLimited。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="queue-005--1ratelimit-整数溢出">QUEUE-005 · <code>1&lt;&lt;rateLimit</code> 整数溢出</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Low</li>
+<li><strong>原文位置</strong>：§13.2 行 1698</li>
+<li><strong>触发条件</strong>：64 位平台上同一 key 连续 AddRateLimited 至少 63 次</li>
+<li><strong>原因与证据边界</strong>：<code>1&lt;&lt;rateLimit</code> 整数溢出</li>
+<li><strong>复现证据</strong>：<code>TestBackoffShiftOverflows</code>（n≥63 → 非正延迟）</li>
+<li><strong>修复或实施建议</strong>：用 <code>time.Duration</code> + 显式上限</li>
+<li><strong>影响范围</strong>：<code>1&lt;&lt;rateLimit</code> 整数溢出</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="rs-001--lister-延迟时成倍超建-pod">RS-001 · lister 延迟时成倍超建 Pod</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§13.3 行 1809–1818（<code>diff := desired - actual</code> 后循环 <code>CreatePod</code>）</li>
+<li><strong>触发条件</strong>：controller 自己创建 Pod 产生的事件再次入队，而 pod lister 尚未观察到新 Pod。</li>
+<li><strong>原因与证据边界</strong>：没有 <code>ControllerExpectations</code> 之类的“写入记账”。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/rs/controllers_test.go::TestOverCreateWithFrozenSnapshot</code> → <code>3 reconciles, frozen empty lister -&gt; 9 pods created for spec.replicas=3</code></li>
+<li><strong>修复或实施建议</strong>：引入 <code>ExpectCreations</code>/<code>CreationObserved</code>，或让 controller 读 apiserver 而非缓存 （性能差但正确）。</li>
+<li><strong>影响范围</strong>：与 QUEUE-001 + INFORMER-003 叠加，副本数可能爆炸。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：<code>pkg/controller/controller_utils.go</code> 行 120–129（说明注释）、 行 147–158（<code>ControllerExpectationsInterface</code>）、行 228–230（<code>ExpectCreations</code>）。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="rs-002--撤回原文没有给出按-name-判断-owner-的实现">RS-002 · 撤回：原文没有给出按 name 判断 owner 的实现</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.3 行 1794-1797（调用点）与行 1838（职责说明）；helper 实现不在原文</li>
+<li><strong>触发条件</strong>：仅在采用“owner 身份 = RS name”这一补写假设时出现。</li>
+<li><strong>原因与证据边界</strong>：p.OwnerUID == rs.Name 是审计补写 helper 的假设；原文只调用 isOwnedBy 并说明使用 owner references。</li>
+<li><strong>复现证据</strong>：evidence/go/rs/controllers_test.go::TestOwnerIdentityIsNameInAuditTranscription；原文 §13.3 的 isOwnedBy 调用及说明。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：原文 §13.3 的 owner references 说明；第二阶段按 ownerReferences UID 关联。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="rs-003--模板和-selector-校验属于待实现契约">RS-003 · 模板和 selector 校验属于待实现契约</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.3 行 1795（用 selector 匹配）与行 1841（<code>Spec.Template</code> materialization 仅有职责说明）；§9.1 行 911-917 的 ReplicaSet 注册项没有 <code>Validate</code></li>
+<li><strong>触发条件</strong>：仅在“模板 label 不满足 selector 且 apiserver 不校验”时可能出现。</li>
+<li><strong>原因与证据边界</strong>：buildPodFromTemplate 的 app=TemplateImage 是审计补写；fake API 无校验。</li>
+<li><strong>复现证据</strong>：evidence/go/rs/controllers_test.go::TestSelectorTemplateMismatchUnderAuditAssumptions</li>
+<li><strong>修复或实施建议</strong>：创建/更新 RS 时校验 template.labels 满足 selector；由真实 API 验证拒绝路径。</li>
+<li><strong>影响范围</strong>：未补校验的辅助实现会反复创建不匹配的 Pod；原文实现行为待验证。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="rs-004--部分失败后保留成功写入status-暂未更新">RS-004 · 部分失败后保留成功写入，status 暂未更新</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.3 行 1814–1824（创建/删除循环中 <code>return err</code>）</li>
+<li><strong>触发条件</strong>：apiserver 部分失败。</li>
+<li><strong>原因与证据边界</strong>：创建循环返回错误，保留已完成写入供下轮收敛。</li>
+<li><strong>复现证据</strong>：<code>TestPartialFailureRetainsSuccessfulCreates</code> → <code>returned apiserver 500 after creating 2 pods; the status update ... was skipped</code></li>
+<li><strong>修复或实施建议</strong>：保留成功写入，按需更新观测状态；通过重试最终收敛。</li>
+<li><strong>影响范围</strong>：该次 status 未刷新；测试没有证明违反可用副本要求，也无需回滚已创建 Pod。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="rs-005--撤回优先删除较新-pod-是声明的选择策略">RS-005 · 撤回：优先删除较新 Pod 是声明的选择策略</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§13.3 行 1818-1823（注释 + <code>CreationTimestamp.After</code> 排序）</li>
+<li><strong>触发条件</strong>：scale down。</li>
+<li><strong>原因与证据边界</strong>：原文写 Pick the youngest first；官方在其他条件相同时也优先删较新的 Pod。测试只涉及单个 RS 缩容。</li>
+<li><strong>复现证据</strong>：evidence/go/rs/controllers_test.go::TestScaleDownDeletesYoungestAsDocumented；research/controller_utils.go 的 ActivePods.Less。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：<code>controller_utils.go</code> 行 733 起的 <code>ActivePods.Less</code> 第 6 条 （行 763–767）<code>Empty creation time pods &lt; newer pods &lt; older pods</code>。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="rs-006--无变化也写-status形成自持循环">RS-006 · 无变化也写 status，形成自持循环</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§13.3 行 1835–1840（无条件 <code>UpdateReplicaSetStatus</code>）</li>
+<li><strong>触发条件</strong>：每次 reconcile。</li>
+<li><strong>原因与证据边界</strong>：没有 <code>oldStatus</code> 比较。</li>
+<li><strong>复现证据</strong>：<code>TestStatusWrittenEveryReconcile</code> → <code>5 reconciles with NO state change produced 5 status writes</code></li>
+<li><strong>修复或实施建议</strong>：比较后再写；或依赖 KV-006 的 no-op 检测。</li>
+<li><strong>影响范围</strong>：与 KV-006 组合成无限写-看循环。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="runtime-001--仅用-procstatus-无法获取容器退出码">RUNTIME-001 · 仅用 /proc/<pid>/status 无法获取容器退出码</pid></h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§7.1 行 531（“checks <code>/proc/&lt;pid&gt;/status</code>, examines the exit code if dead”）； 消息定义 <code>int32 exit_code = 5</code>（行 519）</li>
+<li><strong>触发条件</strong>：容器退出后查询状态。</li>
+<li><strong>原因与证据边界</strong>：<code>status(5)</code> 无退出码字段；退出后 <code>/proc/&lt;pid&gt;</code> 消失。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：runtime 作为 subreaper 用 <code>wait4</code> 收集退出码并持久化（containerd shim 的做法）； 或维护状态文件。</li>
+<li><strong>影响范围</strong>：Pod phase、<code>restartPolicy</code>、CrashLoopBackOff 全部无法判断。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：CRI <code>services.go</code>；OCI runtime <code>state</code> 定义。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="runtime-002--procpidnsnet-是路径不是句柄pause-退出即失效">RUNTIME-002 · <code>/proc/&lt;pid&gt;/ns/net</code> 是路径不是句柄，pause 退出即失效</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§6.4 行 411–420（“Capture <code>/proc/&lt;pause-pid&gt;/ns/net</code> into a saved path”）</li>
+<li><strong>触发条件</strong>：pause 进程被回收后 CNI ADD/DEL。</li>
+<li><strong>原因与证据边界</strong>：路径在 <code>open()</code> 时解析；进程消失路径即失效。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：runtime 内部 bind-mount netns 到稳定路径（<code>/var/run/netns/cni-&lt;uuid&gt;</code>）， 或持有 netns fd 并传 fd 给 CNI（CNI 的 <code>CNI_NETNS</code> 可以是 <code>/proc/&lt;pid&gt;/ns/net</code>， 但必须保证进程存活；规范推荐稳定路径）。</li>
+<li><strong>影响范围</strong>：CNI 失败或作用在错误 namespace。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="runtime-003--pid-复用使保存的-procpidnsnet-指向错误进程">RUNTIME-003 · PID 复用使保存的 <code>/proc/&lt;pid&gt;/ns/net</code> 指向错误进程</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§6.4 / §14.1（把路径当句柄保存）</li>
+<li><strong>触发条件</strong>：pause 进程退出后 PID 被复用。</li>
+<li><strong>原因与证据边界</strong>：<code>/proc</code> 路径在 open 时解析。</li>
+<li><strong>复现证据</strong>：静态（<code>pid_max=4194304</code>，guest 实测）；RUNTIME-002 已证明路径会失效。</li>
+<li><strong>修复或实施建议</strong>：bind-mount netns 或持 fd。</li>
+<li><strong>影响范围</strong>：CNI 把 veth 放进错误 namespace。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="runtime-004--hostdev-在-pivot_root-后不存在">RUNTIME-004 · <code>/host/dev</code> 在 pivot_root 后不存在</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§6.2 行 370–380</li>
+<li><strong>触发条件</strong>：每个容器启动。</li>
+<li><strong>原因与证据边界</strong>：<code>pivot_root</code> 后宿主 <code>/dev</code> 在 <code>/.old/dev</code>，且 <code>/.old</code> 已卸载删除。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json；evidence/guest/acceptance.py。原始历史日志保留。</li>
+<li><strong>修复或实施建议</strong>：pivot_root 前 bind-mount <code>/dev</code>，或 <code>mknod</code> + devices cgroup 白名单。</li>
+<li><strong>影响范围</strong>：容器内无 <code>/dev/null</code> 等，多数程序立即失败。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="runtime-005--必须第二次-fork-才能让子进程成为-pid-1说法错误">RUNTIME-005 · “必须第二次 fork 才能让子进程成为 PID 1”说法错误</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§6.1 行 247（“fork() again — required so that PID 1 inside is the new process”）</li>
+<li><strong>触发条件</strong>：读者照此实现。</li>
+<li><strong>原因与证据边界</strong>：<code>clone(CLONE_NEWPID)</code> 的子进程<strong>就是</strong>新 PID ns 的 PID 1。</li>
+<li><strong>复现证据</strong>：evidence/logs/delivery/fresh-vm/kernel-results.json 的 PENDING-003；helper.go 的 pidns/pidchild；实际 PID=1。</li>
+<li><strong>修复或实施建议</strong>：删掉该步骤，或说明“若用 <code>setns</code> 而非 <code>clone</code> 才需要二次 fork”。</li>
+<li><strong>影响范围</strong>：概念误导；重复 fork 会让“容器主进程”与“PID 1”分离，信号处理出错。</li>
+<li><strong>验证状态</strong>：隔离 KVM 复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="sched-001--score-对-0-容量节点整数除零-panic">SCHED-001 · score() 对 0 容量节点整数除零 panic</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§12.2 行 1569–1571 （<code>cpuUtil := (used.cpu * 100) / node.Status.Allocatable.CPU</code>）</li>
+<li><strong>触发条件</strong>：Node 的 <code>Allocatable</code> 任一维为 0（kubelet 未上报、手工创建 Node、KUBELET-007）。</li>
+<li><strong>原因与证据边界</strong>：无零值保护；<code>fits()</code> 又恰好让零请求 Pod 通过零容量节点。</li>
+<li><strong>复现证据</strong>：<code>evidence/go/scheduler/scheduler_test.go::TestScoreDivideByZero</code> → <code>score() panicked: runtime error: integer divide by zero</code></li>
+<li><strong>修复或实施建议</strong>：<code>fits</code> 里 <code>Allocatable==0 → false</code>；<code>score</code> 用浮点并夹紧。</li>
+<li><strong>影响范围</strong>：scheduler 崩溃；与 KUBELET-007 组合成“必现”。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="sched-002--schedulercache-的初始重建契约缺失">SCHED-002 · schedulerCache 的初始重建契约缺失</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§12.2（<code>schedulerCache</code> 只有 <code>assume</code>/<code>forget</code>，无 informer 重建）</li>
+<li><strong>触发条件</strong>：scheduler 重启（或任何已绑定 Pod 不在本进程 assume 过）。</li>
+<li><strong>原因与证据边界</strong>：原文引用 schedulerCache 而未给实现；空 map 初始化及 assume/forget 来自审计补写。</li>
+<li><strong>复现证据</strong>：<code>TestAuditCacheWithoutRebuildLosesTally</code> → <code>run1: 4 pods bound</code>；<code>after restart a fresh cache accepted 4 MORE 500m pods onto the same 2000m node (total would be 4000m)</code></li>
+<li><strong>修复或实施建议</strong>：由 List 已绑定 Pod 重建 Node 资源账本，并协调 Assume 与 watch 确认。</li>
+<li><strong>影响范围</strong>：辅助 cache 重启后遗忘旧资源；真实实现须用重启验收验证。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="sched-003--多调度器需要选主或共享绑定约束">SCHED-003 · 多调度器需要选主或共享绑定约束</h2>
+<ul>
+<li><strong>分类</strong>：教学简化</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§12.2（<code>schedulerCache</code> 是进程内 map）</li>
+<li><strong>触发条件</strong>：两个 scheduler 实例。</li>
+<li><strong>原因与证据边界</strong>：原文声明单节点/无 HA；多副本辅助实验使用两个独立内存 cache。</li>
+<li><strong>复现证据</strong>：<code>TestNoReservationAcrossReplicas</code> → <code>replica A bound 800m, replica B bind error=&lt;nil&gt; ... 160% committed</code></li>
+<li><strong>修复或实施建议</strong>：单副本（声明清楚）或 Lease 选举。</li>
+<li><strong>影响范围</strong>：启用多副本前需要选主和原子绑定；单副本范围继续成立。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="sched-004--仅检查资源的筛选不含节点健康策略">SCHED-004 · 仅检查资源的筛选不含节点健康策略</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§12.2 <code>fits</code>（行 1558–1563）</li>
+<li><strong>触发条件</strong>：Node 为 NotReady。</li>
+<li><strong>原因与证据边界</strong>：原文声明仅有资源可行性/评分；Ready 布尔字段由审计补写。</li>
+<li><strong>复现证据</strong>：<code>TestResourceOnlyFilterIgnoresAuxiliaryReadyFlag</code> → <code>pod bound to a Node with Ready=false</code></li>
+<li><strong>修复或实施建议</strong>：<code>fits</code> 检查 <code>Node.Status.Conditions[Ready]</code>。</li>
+<li><strong>影响范围</strong>：扩展 NodeReady/故障恢复时需增加健康门槛；官方通常通过 taint/toleration 等机制联动。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="sched-005--121-称-filter-并行代码串行">SCHED-005 · §12.1 称 filter 并行，代码串行</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：行 1452 vs §12.2</li>
+<li><strong>触发条件</strong>：—</li>
+<li><strong>原因与证据边界</strong>：§12.1 称 filter 并行，代码串行</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：改文档，或真的并行</li>
+<li><strong>影响范围</strong>：§12.1 称 filter 并行，代码串行</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="sched-006--pod-删除与资源账本释放的连接未给出">SCHED-006 · Pod 删除与资源账本释放的连接未给出</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§12.2（只有 bind 失败才 <code>forget</code>）</li>
+<li><strong>触发条件</strong>：Pod 删除/驱逐。</li>
+<li><strong>原因与证据边界</strong>：原文 Run 没有删除处理；辅助实验未模拟真实 informer 删除事件。</li>
+<li><strong>复现证据</strong>：<code>TestAuditCacheWithoutDeleteHandlerRetainsCapacity</code> → 1000m 节点，p1 删除后 100m 新 Pod <code>no feasible nodes</code></li>
+<li><strong>修复或实施建议</strong>：接入 Pod Add/Update/Delete，按 UID 幂等更新资源账本。</li>
+<li><strong>影响范围</strong>：若只实现辅助 cache 的 assume/forget，删除后容量不会释放。</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="sched-007--撤回预先填写-nodename-的-pod-跳过调度">SCHED-007 · 撤回：预先填写 nodeName 的 Pod 跳过调度</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§12.2</li>
+<li><strong>触发条件</strong>：阅读或实现该处接口时</li>
+<li><strong>原因与证据边界</strong>：原文 scheduleOne 以 nodeName 非空判断已调度，符合该调度器只处理未绑定 Pod 的职责。</li>
+<li><strong>复现证据</strong>：evidence/go/scheduler/scheduler_test.go::TestPreassignedPodBypassesScheduler；原文 §12.2。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="sched-008--零请求-pod-全挤字典序最小节点">SCHED-008 · 零请求 Pod 全挤字典序最小节点</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§12.2</li>
+<li><strong>触发条件</strong>：空闲节点上调度零请求 Pod</li>
+<li><strong>原因与证据边界</strong>：零请求 Pod 全挤字典序最小节点</li>
+<li><strong>复现证据</strong>：<code>TestAllIdleNodesTieOnName</code>（测量）</li>
+<li><strong>修复或实施建议</strong>：加 pod 计数 score</li>
+<li><strong>影响范围</strong>：零请求 Pod 全挤字典序最小节点</li>
+<li><strong>验证状态</strong>：辅助实现观察</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="watch-001--慢消费者被当成-410relist-风暴">WATCH-001 · 慢消费者被当成 410，relist 风暴</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§10.2 行 1123（<code>if !ok { emitErr(w, 410, "Gone", "watch closed: slow consumer or compaction") }</code>）， 配合 §8.4 <code>subscriberLoop</code> 的 <code>default: delete/close</code>。</li>
+<li><strong>触发条件</strong>：客户端消费慢，<code>sub.ch</code>（容量 256）填满。</li>
+<li><strong>原因与证据边界</strong>：把“消费者慢”映射成“revision 太旧”。客户端 relist 后仍是同一个慢消费者， 再次被杀。</li>
+<li><strong>复现证据</strong>：<code>TestSlowConsumerMapsTo410</code>（apiserver module）——客户端把 TCP 接收缓冲 设小后停止读取，写入 1000 个事件，随后恢复读取，最终收到 <code>{"type":"ERROR","object":{"code":410}}</code>，而此时 <code>compactRev=0</code>（从未 compact）。 即：410 的原因是“消费者慢”，不是“revision 被压缩”。</li>
+<li><strong>修复或实施建议</strong>：慢消费者应积压（per-subscriber queue）或阻塞写；仅当请求的 revision 确实已被压缩、无法重放时才返回 410，且 <code>reason</code> 用 <code>Expired</code>。</li>
+<li><strong>影响范围</strong>：大规模 watch 下 relist 风暴；与 INFORMER-001 叠加会 panic。</li>
+<li><strong>验证状态</strong>：用户态复现</li>
+<li><strong>官方依据</strong>：K8s <code>#410-gone-responses</code> 明确 410 只用于“revision older than retained”。</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="watch-002--410compaction-路径在提供的代码里不可达">WATCH-002 · 410/compaction 路径在提供的代码里不可达</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§8.4 <code>Watch</code> 行 742（仅 <code>startRev &gt; 0 &amp;&amp; startRev &lt;= compactRev</code>）； §8 之外无 <code>Compact</code> 调用</li>
+<li><strong>触发条件</strong>：按教程装配的系统。</li>
+<li><strong>原因与证据边界</strong>：没有任何组件调用 <code>Compact</code>，<code>compactRev</code> 恒为 0； 而 <code>startRev=0</code> 又被当作“全部历史”。</li>
+<li><strong>复现证据</strong>：静态 + KV-002 的执行结果（compactRev 推进但历史未裁）。</li>
+<li><strong>修复或实施建议</strong>：实现周期性 compaction 策略，并让 410 与“历史真的缺失”对应。</li>
+<li><strong>影响范围</strong>：§10.3 的恢复时序图与实现不符；informer 的 410 分支永远不触发。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="watch-003--bookmark-可能超前于该-watcher-未投递的匹配事件">WATCH-003 · bookmark 可能超前于该 watcher 未投递的匹配事件</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§10.4 行 1109–1112</li>
+<li><strong>触发条件</strong>：慢 watcher 积压时 ticker 到期</li>
+<li><strong>原因与证据边界</strong>：bookmark 可能超前于该 watcher 未投递的匹配事件</li>
+<li><strong>复现证据</strong>：静态；对照 v1.29.0 <code>cache_watcher.go</code> 行 38–48、53–88 的 <code>cacheWatcher</code> bookmark 状态机与 <code>cacher.go</code> 行 897–963 的分发链</li>
+<li><strong>修复或实施建议</strong>：bookmark 只在该 watcher 已投递到的 RV 上发出，并与事件共用有序队列</li>
+<li><strong>影响范围</strong>：bookmark 可能超前于该 watcher 未投递的匹配事件</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="watch-004--chunked-响应头可交由-nethttp-管理">WATCH-004 · chunked 响应头可交由 net/http 管理</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§10.2 行 1089</li>
+<li><strong>触发条件</strong>：任何 watch</li>
+<li><strong>原因与证据边界</strong>：HTTP/1.1 的流传输头与 Go 自带传输管理重复；原报告未给出因此失效的反例。</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：删除该 header</li>
+<li><strong>影响范围</strong>：删除手工设置可简化 HTTP/1.1 与 HTTP/2 的兼容处理。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="watch-005--31-称-http2101-用-http11">WATCH-005 · §3.1 称 HTTP/2，§10.1 用 HTTP/1.1</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：行 106 vs 1073</li>
+<li><strong>触发条件</strong>：—</li>
+<li><strong>原因与证据边界</strong>：§3.1 称 HTTP/2，§10.1 用 HTTP/1.1</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：统一表述</li>
+<li><strong>影响范围</strong>：§3.1 称 HTTP/2，§10.1 用 HTTP/1.1</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="watch-006--93-的-gap-free-论据在实现中不成立">WATCH-006 · §9.3 的 gap-free 论据在实现中不成立</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§9.3 行 1042</li>
+<li><strong>触发条件</strong>：list→watch</li>
+<li><strong>原因与证据边界</strong>：§9.3 的 gap-free 论据在实现中不成立</li>
+<li><strong>复现证据</strong>：综合 KV-001/KV-004/API-006</li>
+<li><strong>修复或实施建议</strong>：先修三者</li>
+<li><strong>影响范围</strong>：§9.3 的 gap-free 论据在实现中不成立</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：KV-001、KV-004、API-006</li>
+</ul>
+<h2 id="xc-001--apiserver-与-kv-是同进程库还是独立进程自相矛盾">XC-001 · apiserver 与 kv 是“同进程库”还是“独立进程”自相矛盾</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：Critical</li>
+<li><strong>原文位置</strong>：§8.1 行 596（“Go-internal interface ... co-process or co-linked”）vs §18.1 行 2453–2457（<code>./minikv --listen :2379</code> + <code>./mini-apiserver --kv localhost:2379</code>）</li>
+<li><strong>触发条件</strong>：读者按 §18.1 启动。</li>
+<li><strong>原因与证据边界</strong>：minikv 没有任何 RPC/gRPC 定义，§8.5 明确说用内部接口。</li>
+<li><strong>复现证据</strong>：静态；两处原文直接冲突。</li>
+<li><strong>修复或实施建议</strong>：第二阶段定死其一并写入 <code>docs/</code>。推荐单进程内嵌。</li>
+<li><strong>影响范围</strong>：进程边界是所有后续接口（watch 传输、错误处理、部署脚本）的基础。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="xc-002--object-接口与-getobjectmeta-未定义">XC-002 · <code>Object</code> 接口与 <code>GetObjectMeta</code> 未定义</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§9.1 行 872–878（<code>Prototype func() Object</code>）；§9.2 行 971（<code>obj.GetObjectMeta()</code>）</li>
+<li><strong>触发条件</strong>：读者搭建 registry。</li>
+<li><strong>原因与证据边界</strong>：原文缺少 Object 接口和 GetObjectMeta/SetObjectMeta 的定义，需要实现者补齐类型契约。</li>
+<li><strong>复现证据</strong>：静态对照原文</li>
+<li><strong>修复或实施建议</strong>：定义 <code>Object</code> 接口（<code>GetObjectMeta/SetObjectMeta/DeepCopyObject</code>）。</li>
+<li><strong>影响范围</strong>：apiserver 的类型系统无法搭建。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="xc-003--binding-与-createbinding-未定义且无对应路由">XC-003 · <code>Binding</code> 与 <code>CreateBinding</code> 未定义，且无对应路由</h2>
+<ul>
+<li><strong>分类</strong>：实现缺口</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§12.2 行 1540–1546；§12.3</li>
+<li><strong>触发条件</strong>：scheduler bind。</li>
+<li><strong>原因与证据边界</strong>：类型与客户端方法缺失；§9.2 的 handler 集合里也没有 binding 分支。 §12.3 把 HTTP 契约描述得很清楚（<code>POST .../pods/{name}/binding</code>），但两端都没有 落到类型/路由上。</li>
+<li><strong>复现证据</strong>：静态（符号计数 0）+ API-005 的静态契约分析。API-005 的 405 实测来自 辅助转录，不是原文完整 server。</li>
+<li><strong>修复或实施建议</strong>：定义 <code>Binding</code> 类型与 <code>/binding</code> 子资源，并在 apiserver 侧写 <code>spec.nodeName</code>。</li>
+<li><strong>影响范围</strong>：调度无法落地（按原文把 scheduler 与 apiserver 接起来时缺一个端点）。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：相同 ID 见 AUDIT.md 的模块分析和证据索引</li>
+</ul>
+<h2 id="xc-004--workqueue-无-shutdown但所有-controller-依赖-quit">XC-004 · WorkQueue 无 ShutDown，但所有 controller 依赖 <code>quit</code></h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：High</li>
+<li><strong>原文位置</strong>：§12.2 / §13.3 / §13.4 / §13.5 的 <code>if quit { return }</code></li>
+<li><strong>触发条件</strong>：停止 controller。</li>
+<li><strong>原因与证据边界</strong>：见 QUEUE-003。</li>
+<li><strong>复现证据</strong>：<code>TestQuitIsAlwaysFalseAndNoShutdown</code></li>
+<li><strong>修复或实施建议</strong>：同 QUEUE-003。</li>
+<li><strong>影响范围</strong>：所有 controller 无法优雅退出。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+<li><strong>关联记录</strong>：QUEUE-003</li>
+</ul>
+<h2 id="xc-005--4-行数相加-3900--1-的-500017-百分比-1001">XC-005 · §4 行数相加 3900 ≠ §1 的 5000；§17 百分比 100.1%</h2>
+<ul>
+<li><strong>分类</strong>：设计取舍</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§1/§4/§17</li>
+<li><strong>触发条件</strong>：—</li>
+<li><strong>原因与证据边界</strong>：行数与百分比为教学性估算；小数舍入和分类口径需在正文交代。</li>
+<li><strong>复现证据</strong>：静态计算</li>
+<li><strong>修复或实施建议</strong>：采用数量级表述，或记录版本、计数范围与舍入规则。</li>
+<li><strong>影响范围</strong>：影响教学估算的可核对性，保留为编写建议。</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="xc-006--撤回gone-是合法-statusreason">XC-006 · 撤回：Gone 是合法 StatusReason</h2>
+<ul>
+<li><strong>分类</strong>：已撤回</li>
+<li><strong>严重程度</strong>：—</li>
+<li><strong>原文位置</strong>：§10.1</li>
+<li><strong>触发条件</strong>：—</li>
+<li><strong>原因与证据边界</strong>：apimachinery v0.29.0 定义 StatusReasonGone="Gone"；Reflector 同时接受 IsGone 和 IsResourceExpired。</li>
+<li><strong>复现证据</strong>：https://github.com/kubernetes/apimachinery/blob/v0.29.0/pkg/apis/meta/v1/types.go；evidence/research/reflector.go::isExpiredError。</li>
+<li><strong>修复或实施建议</strong>：保留正常行为或历史改判记录，无需按原缺陷建议修改实现。</li>
+<li><strong>影响范围</strong>：旧的缺陷归因撤回，后续设计采用本条更正后的契约。</li>
+<li><strong>验证状态</strong>：已撤回</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="xc-007--18-trace-与代码矛盾cni_netns并行node-注册">XC-007 · §18 trace 与代码矛盾（CNI_NETNS、并行、Node 注册）</h2>
+<ul>
+<li><strong>分类</strong>：原文错误</li>
+<li><strong>严重程度</strong>：Medium</li>
+<li><strong>原文位置</strong>：§18</li>
+<li><strong>触发条件</strong>：读者按 trace 实现</li>
+<li><strong>原因与证据边界</strong>：§18 trace 与代码矛盾（CNI_NETNS、并行、Node 注册）</li>
+<li><strong>复现证据</strong>：静态</li>
+<li><strong>修复或实施建议</strong>：标注为设计推演</li>
+<li><strong>影响范围</strong>：§18 trace 与代码矛盾（CNI_NETNS、并行、Node 注册）</li>
+<li><strong>验证状态</strong>：静态核对</li>
+<li><strong>官方依据</strong>：见 evidence/research/SOURCES.txt 中对应模块规范</li>
+</ul>
+<h2 id="补充实验结论">补充实验结论</h2>
+<p>历史编号保留以便追踪。原六项待验证记录均已结项，实施阶段工作见逐项结论。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>内容</th>
+<th>状态</th>
+<th>结论</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PENDING-001</td>
+<td>跨节点 Service</td>
+<td>已完成</td>
+<td>两台独立 KVM 以 per-node /24 和静态路由转发；完整返程路由保留 Pod 源 IP，删除返程路由失败，SNAT 可恢复。</td>
+<td>evidence/logs/delivery/fresh-vm/cross-results.json</td>
+</tr>
+<tr>
+<td>PENDING-002</td>
+<td>多节点 IPAM 边界</td>
+<td>已完成审计验证</td>
+<td>独立状态/同池产生重复地址，分离 per-node CIDR 后不同；与原文声明一致。IPAM 广播地址与编译问题另记 CNI-009/010。</td>
+<td>evidence/logs/delivery/fresh-vm/cross-results.json；ipam-reserved-address.log</td>
+</tr>
+<tr>
+<td>PENDING-003</td>
+<td>PID namespace 的 PID 1</td>
+<td>已完成</td>
+<td>CLONE_NEWPID 的子进程 getpid=1，无需原文所说的第二次 fork。</td>
+<td>evidence/logs/delivery/fresh-vm/kernel-results.json</td>
+</tr>
+<tr>
+<td>PENDING-004</td>
+<td>真实 containerd CRI</td>
+<td>已完成</td>
+<td>CRI v1 创建 sandbox 和真实容器，退出后 ContainerStatus 为 CONTAINER_EXITED、exitCode=42；容器、sandbox 和服务已清理。</td>
+<td>evidence/logs/delivery/fresh-vm/cri-results.json；cri-guest.log</td>
+</tr>
+<tr>
+<td>PENDING-005</td>
+<td>nft/legacy 后端</td>
+<td>已完成</td>
+<td>两个后端均复现多端口串线、hairpin 失败及修复、声明链重建与未声明链残留，并通过清理断言。</td>
+<td>evidence/logs/delivery/fresh-vm/kernel-results.json</td>
+</tr>
+<tr>
+<td>PENDING-006</td>
+<td>KV 历史保留上界</td>
+<td>已完成审计验证</td>
+<td>有限十万次写入保留十万个事件；这是 no-op trimHistory 辅助实现的结果。原文缺失的压缩和持久化实现归入第二阶段，不再等待小时级实验。</td>
+<td>evidence/logs/delivery/user-space/go-kv.log；KV-009</td>
+</tr>
+</tbody>
+</table></div>
+<p>实验环境、命令和清理见 <a href="../docs/VM-EXPERIMENTS.html">VM 实验说明</a>。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

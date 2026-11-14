@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>R01：ReplicaSet 控制器 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="r01replicaset-控制器">R01：ReplicaSet 控制器</h1>
+<p><code>mini-controller-manager --server &lt;API地址&gt;</code> 是独立进程，当前运行 ReplicaSet 控制器。
+它用 C01 的 Informer/WorkQueue 监听 RS 和 Pod，串行协调副本，通过公开 API 创建、删除
+Pod 和更新 RS status。SIGINT/SIGTERM 会取消两个 Informer 并等待退出。</p>
+<h2 id="副本归属与动作">副本归属与动作</h2>
+<p>控制器读取最新 ReplicaSet，再 List 同 namespace 的 Pod。只有 controller ownerReference
+的 APIVersion=apps/v1、Kind=ReplicaSet、Name 与 UID 均匹配，且 Pod labels 满足 RS selector
+时才计入该 RS。相同标签的独立 Pod 保持独立；本实现不提供孤儿认领和 selector 变更后的释放。
+仍属于当前 RS 但 labels 不匹配的 Pod 保持现状，不计入副本和 ready 统计。
+API 在创建/更新 RS 时检查 selector 与 template labels 一致。</p>
+<ul>
+<li>活跃副本少于目标：从 template 复制 Pod spec、labels、annotations，设置 ownerReference。</li>
+<li>副本过多：按名称降序删除多余 Pod。</li>
+<li>Succeeded/Failed Pod：回收并补建新 UID 的 Pod。</li>
+<li>父 RS 删除或同名重建：重新核对 owner 的实时 UID，清理旧 UID 的子 Pod。</li>
+<li>每次最多创建或缩容删除 16 个活跃副本，余量通过队列继续处理。</li>
+</ul>
+<p>创建名称由 RS 名称前缀、RS UID 摘要与 slot 确定。创建响应丢失后，下一轮 List 会看到
+已提交的 Pod；尚未观察到时也会重试相同名字。409 后重新查询，避免追加随机名字超建。
+名称已被无关 Pod 占用时保留该 Pod 并选下一 slot。删除携带 Pod RV，冲突后重新查询，
+删除响应丢失后由下一次 List 确认结果。</p>
+<p>每轮动作前后都读 API，而非用 Informer 缓存计数；已确认创建/删除可在下一轮被观察到，
+无需另建未观察创建的 expectation 账本。Informer 负责触发工作，缓存延迟不改变副本计算。
+当前支持一个 controller-manager 进程，无 leader election。</p>
+<h2 id="状态">状态</h2>
+<p>动作后重新 List，报告当前活跃 Replicas、FullyLabeledReplicas、ReadyReplicas 与
+AvailableReplicas。Ready 要求 Pod Running，所有应用容器均有状态且 Ready=true；
+Available 暂与 Ready 相同，没有 minReadySeconds。相同 status 经 API 的 no-op 检查不产生
+新版本，防止状态事件反复触发写入。ObservedGeneration 保持零，当前模型尚无 generation 字段。</p>
+<p>控制器使用 GET 时的 RS RV 写 status；资源同时改变时返回 409，之后按新 spec 重试。
+API 不可用、创建或删除失败时保留任务，并采用队列指数退避；回调中只入队。</p>
+<h2 id="运行与验收">运行与验收</h2>
+<pre><code class="language-bash">cd reference
+go build -buildvcs=false -o /tmp/mini-controller-manager ./cmd/mini-controller-manager
+/tmp/mini-controller-manager --server http://127.0.0.1:8080
+go test -race -count=1 -timeout=60s ./internal/controller ./cmd/mini-controller-manager
+</code></pre>
+<p>普通 HTTP 测试覆盖创建、扩缩容、删除补齐、终止替换、UID 重建、孤儿回收、无关 Pod 保护、
+创建与删除响应丢失、slot 冲突、批量限制、status 无变化和进程取消。
+隔离 KVM 验收通过真实容器验证两个副本、删除恢复、controller-manager 强杀重启后扩到 3 个、
+缩到 1 个，以及父 RS 删除后的 Pod/运行时回收。命令与日志见 <a href="../progress/N01-R01.html">N01-R01.md</a>。
+Deployment 与 Endpoints 控制器属于下一项 R02。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

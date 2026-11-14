@@ -1,0 +1,37 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.1：写入和读取一个键 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-31写入和读取一个键">Stage 3.1：写入和读取一个键</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>实现 put 和 get，支持读取已有值以及覆盖写入。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本小节验收你的键值存储。测试器启动 <code>--driver</code> 指向的可执行程序，把本轮数据目录作为
+<code>os.Args[1]</code> 传入，然后不断往 stdin 写单行 JSON。你从消息的 <code>op</code> 字段判断操作，向 stdout
+返回一行 JSON；同一个进程中的多次请求应操作同一份存储。
+需要保存数据时，先用 <code>os.MkdirAll</code> 创建传入的目录。</p>
+<p>例如 <code>./bin/my-minik8s /tmp/course-run/work/driver</code> 表示启动你的程序，并把这个目录交给它保存数据。
+本阶段可在普通用户环境运行。程序收到 <code>close</code> 后清理并正常结束。
+<a href="../../docs/ADAPTER.html#stage-3">接入说明</a> 解释完整消息格式。</p>
+<h2 id="第一组输入和输出">第一组输入和输出</h2>
+<p>KV 是 key/value（键/值）存储。key 用来找到一条数据，value 保存它的内容。测试器会连续发送：</p>
+<pre><code class="language-json">{"op":"put","key":"basic","value":"one"}
+{"op":"get","key":"basic"}
+{"op":"put","key":"basic","value":"two"}
+{"op":"get","key":"basic"}
+</code></pre>
+<p>put 要把数据保存到当前存储；get 要返回这个键已有的值。第二条响应应包含：</p>
+<pre><code class="language-json">{"ok":true,"entry":{"key":"basic","value":"one"}}
+</code></pre>
+<p>第四条的 value 应变成 two。entry 是返回的一条记录，本阶段读取它的 value；版本字段在 3.3
+加入验收。同一进程要处理多条请求，直到收到 close。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>先用一个 map 保存键和值，put 写入或覆盖，get 查找。将这层操作接到 main 的 JSON 消息分派。
+存储可以封装成自己的 Go 类型，测试器通过你的进程输入输出访问它。</p>
+<p><a href="../stages/03-kv.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>KV-GET</code>：写入 one 后读到 one，覆盖为 two 后读到 two。</p>
+<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 3.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>N01：Kubelet 与 containerd CRI · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="n01kubelet-与-containerd-cri">N01：Kubelet 与 containerd CRI</h1>
+<p><code>mini-kubelet</code> 在经 UUID 核验的隔离 KVM 内运行。它向 API 注册 Node、报告心跳和容量，
+周期读取分配给本节点的 Pod，经 CRI 启动实际容器，再通过 <code>/status</code> 报告状态。
+<code>--network-mode host</code> 用于初始运行时实验；完整 MVP 使用 <code>--network-mode pod</code>，
+由 P01 的 CNI 建立独立 Pod 网络，proxy 提供 Service 转发。Pod 模式还要求 CRI NetworkReady。</p>
+<h2 id="进程与依赖">进程与依赖</h2>
+<p>Go 实现使用标准库；CRI 适配层调用固定版本 <code>crictl v1.29.0</code>，由 containerd CRI v1
+执行 sandbox/container 操作。本轮真实环境为 Debian 12、containerd 1.6.20、runc 1.1.5，
+配置见 <code>reference/tests/vm/run.py</code>。CLI 调用使用参数数组，未经过 shell；每次操作默认
+限制 30s，并给 crictl 传 <code>--timeout 10s</code>。CLI 用法可参阅
+<a href="https://github.com/kubernetes-sigs/cri-tools/blob/v1.29.0/docs/crictl.md">官方 v1.29.0 文档</a>。</p>
+<pre><code class="language-text">mini-kubelet -&gt; internal/runtime.CRI -&gt; crictl -&gt; containerd CRI -&gt; runc
+      |
+      +---- HTTP Node / Pod /status ---- mini-apiserver
+</code></pre>
+<p>运行入口示例，在批准的 guest 内执行：</p>
+<pre><code class="language-bash">mini-kubelet --server http://127.0.0.1:8080 \
+  --node node --address 10.0.2.15 --cpu 2000 --memory 1073741824 \
+  --vm-id &lt;本次批准的VM_UUID&gt; --network-mode pod --data /var/lib/minik8s --interval 2s
+</code></pre>
+<p>入口同时检查 DMI product_uuid 和 <code>systemd-detect-virt --vm</code> 的 kvm 结果；UUID 缺失、
+不匹配或运行环境错误时退出，尚未访问运行时。测试注入 runtime/命令 runner，在宿主机
+只执行普通 Go/HTTP 测试。实际 mount、cgroup、容器运行都在 guest 内由 containerd 完成。</p>
+<h2 id="公开接口">公开接口</h2>
+<p><code>internal/runtime.Runtime</code> 提供：</p>
+<pre><code class="language-go">Ready(ctx context.Context) error
+Sandboxes(ctx context.Context) ([]Sandbox, error)
+Remove(ctx context.Context, sandboxID string) error
+Sync(ctx context.Context, pod *api.Pod) (api.PodStatus, error)
+</code></pre>
+<p>同一个 Runtime 的 Sync/Remove 由 kubelet 串行调用。Sandboxes 通过节点标签筛选，并在
+解码后再次核对节点与 Pod UID。容器与 sandbox 都标注节点、Pod UID 和 spec 摘要，
+与其他节点或未标注的资源分开。</p>
+<h2 id="协调与恢复">协调与恢复</h2>
+<p>每次 Sync 重新查询 CRI：</p>
+<ol>
+<li>选取匹配 Pod UID/spec 且 Ready 的 sandbox，清理同 UID 的失效或重复 sandbox。</li>
+<li>缺失时创建 sandbox；按 CRI 元数据寻找已有容器和最大 attempt。</li>
+<li>init container 串行执行，成功退出后才进入下一个，最后启动应用容器。</li>
+<li>Created 容器继续 Start；Running 容器被接管；Exited 容器保留退出码并按策略决定重启。</li>
+<li>创建新 attempt 后移除旧 attempt，计数来自 CRI 元数据，kubelet 重启后仍可恢复。</li>
+</ol>
+<p>请求响应丢失时，下一次查询发现已提交的 sandbox/container。进程不靠私有 ID 文件恢复，
+也不因 kubelet 退出而删除运行中的容器。spec 修改会重建 sandbox；该场景不保证 restartCount
+跨 sandbox 延续。退出后重试延迟按 attempt 从 1s 倍增至 30s，按 CRI finishedAt 计算。</p>
+<p>RestartPolicy：</p>
+<ul>
+<li>Never：应用全部退出后，全部为 0 则 Succeeded，否则 Failed。</li>
+<li>OnFailure：非零退出重试，成功退出保留；所有应用成功后为 Succeeded。</li>
+<li>Always：应用退出后重试，包括退出码 0。</li>
+<li>init 成功后保持完成；init 失败且 Never 时 Pod Failed，应用不启动，其余策略重试 init。</li>
+</ul>
+<p>init 尚未完成或容器尚未启动时为 Pending；应用已开始且至少一个还在运行时为 Running。
+ContainerStatus 包括 containerd ID、State、Ready、RestartCount、ExitCode。
+新增 <code>status.initContainerStatuses</code> 区分 init 与应用状态。当前 Ready 来自进程运行状态，
+未实现 readiness/liveness probe。</p>
+<h2 id="配置与清理">配置与清理</h2>
+<p>支持 command、args、环境变量和已有 hostPath 文件/目录。hostPath 的 File/Directory 类型
+会检查实际节点文件；DirectoryOrCreate 等类型尚未提供。ReadOnly 映射为 CRI 只读挂载。
+每个容器的 CPU 值映射为 cpuShares（范围 2–262144），memory 值映射为 memory limit；
+CPU 同时设置 CFS period=100000us、quota=CPU毫核×100us；正数 quota 最低 1000us，
+CPU=0 不设硬上限。过大的值若无法表示 quota 则报告错误。调度请求与运行时限额沿用同一
+简化字段。cgroup v2 的 pids.max 默认 512。应用容器显式采用 CRI RuntimeDefault seccomp，
+能力先全部删除再仅添加 NET_BIND_SERVICE。这些配置通过成熟运行时落地，无需自写过滤器。</p>
+<p>Pod/Node 列表和 CRI 列表均成功后才回收不再属于本节点的 sandbox。API 连接失败时保留
+运行中的工作。删除依次移除容器、停止 sandbox、移除 sandbox；失败会在后续周期重试。
+临时配置目录随 Sync 退出清理，容器日志保留在 data/logs 下，hostPath 内容由调用方管理。</p>
+<p>Node 默认每 2s 协调并更新心跳；报告 Capacity/Allocatable、InternalIP、Ready 条件。
+正常退出将 Ready 置 False。硬故障的心跳过期判定、驱逐和跨节点迁移尚待后续实现。
+单个 Pod 出错会记录 RuntimeError 并继续其他 Pod。状态写使用原 Pod RV，冲突或删除时
+由下一轮重新查询；旧 Pod 的状态不会写给同名的新 UID。</p>
+<h2 id="真实验收">真实验收</h2>
+<p><code>reference/tests/vm/run.py</code> 构建二进制和本地 OCI fixture，使用已审查的 QEMU user 网络
+launcher 创建一次性 guest，核对 UUID 后安装运行时，执行组件集成验收，最后停止 VM 并删除
+临时磁盘、seed 和 SSH key。早期 N01/R01 在 node1 实验、node2 待机；
+现在 --two-node 会继续运行两个节点的真实调度、通信、拉取与资源限制验收，结果见
+<a href="../progress/ALIGNMENT.html">原文范围对齐</a>。</p>
+<p>下载及校验镜像的方法沿用 <a href="../VM-EXPERIMENTS.html">VM 环境说明</a>，复现命令见
+<a href="../progress/N01-R01.html">本轮进度</a>。黑盒断言覆盖真实容器、资源设置、退出码、init/env/
+hostPath、两种重启策略、进程重启、API 中断与删除清理。运行记录与失败过程一并保留。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

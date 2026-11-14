@@ -1,0 +1,438 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>A02 交接：HTTP Watch、/status 与 /binding · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="a02-交接http-watchstatus-与-binding">A02 交接：HTTP Watch、/status 与 /binding</h1>
+<p>2026-11-06。在 A01 的 CRUD/List 与 K02 的 KV Watch 之上补齐流式 Watch、status 子资源、
+binding 子资源及对应 Go client。范围严格限制在 <code>internal/api</code>、<code>internal/client</code>、
+<code>cmd/mini-apiserver</code>、必要测试、<code>scripts/verify-a01.py</code> 的 A01 边界断言、
+<code>reference/README*.md</code>、<code>docs/contracts/api.md</code> 与本文件。<code>internal/kv</code>、<code>audit/</code> 与
+其他模块未改动；KV 校验和与 TAKEOVER-A01 记录一致（见文末）。</p>
+<h2 id="范围与文件">范围与文件</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>变化</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reference/internal/api/watch.go</code></td>
+<td>新增</td>
+<td><code>handleWatch</code>、RV 三态、Range→Exact 快照安装、初始化/周期 BOOKMARK、NDJSON 帧、ERROR 帧、写期限</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/status.go</code></td>
+<td>新增</td>
+<td><code>/status</code> GET/PUT/PATCH、status 合并、no-op 归一化、CAS</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/subresource.go</code></td>
+<td>新增</td>
+<td><code>Binding</code> 类型、<code>/binding</code>、Node 存在性、CAS、同目标幂等</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/resources.go</code></td>
+<td>少量新增</td>
+<td><code>resource.statusCopy/statusView/hasStatus</code></td>
+</tr>
+<tr>
+<td><code>reference/internal/api/server.go</code></td>
+<td>修改</td>
+<td>子资源与 watch 分派、<code>Options.BookmarkInterval</code>、<code>Server.Shutdown</code>、<code>ErrCompacted → 410</code>、body 读取重构</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/errors.go</code></td>
+<td>修改</td>
+<td><code>ReasonExpired</code></td>
+</tr>
+<tr>
+<td><code>reference/internal/api/types.go</code></td>
+<td>注释</td>
+<td>包说明更新为 A01+A02</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/watch_test.go</code></td>
+<td>新增</td>
+<td>21 个 HTTP 级 Watch 测试（含慢消费者、超时、取消、shutdown）</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/subresource_test.go</code></td>
+<td>新增</td>
+<td>13 个 status/binding 测试（含 3 组子测试）</td>
+</tr>
+<tr>
+<td><code>reference/internal/api/server_test.go</code></td>
+<td>修改</td>
+<td>旧 405 测试替换为真实路由边界；testServer 增加 <code>api</code> 与 options</td>
+</tr>
+<tr>
+<td><code>reference/internal/client/client.go</code></td>
+<td>修改</td>
+<td><code>WatchCollection</code>/<code>Watch</code>/<code>Stop</code>/<code>Done</code>、<code>GetStatus</code>/<code>UpdateStatus</code>/<code>BindPod</code> 与泛型包装、<code>WatchFrameTypes</code></td>
+</tr>
+<tr>
+<td><code>reference/internal/client/watch_test.go</code></td>
+<td>新增</td>
+<td>11 个真实 HTTP 流式客户端测试</td>
+</tr>
+<tr>
+<td><code>reference/cmd/mini-apiserver/main.go</code></td>
+<td>修改</td>
+<td>shutdown 先 <code>api.Server.Shutdown</code></td>
+</tr>
+<tr>
+<td><code>reference/cmd/mini-apiserver/main_test.go</code></td>
+<td>新增</td>
+<td>活跃 watch 下的进程退出测试</td>
+</tr>
+<tr>
+<td><code>reference/scripts/verify-a01.py</code></td>
+<td>修改</td>
+<td>405 边界替换为真实 watch/status/binding 断言，并加入 SIGTERM+活跃 watch</td>
+</tr>
+<tr>
+<td><code>docs/contracts/api.md</code></td>
+<td>修改</td>
+<td>Watch/status/binding/错误/超时/C01 依赖</td>
+</tr>
+<tr>
+<td><code>reference/README.md</code>、<code>README-zh_cn.md</code></td>
+<td>修改</td>
+<td>A02 状态与运行说明</td>
+</tr>
+<tr>
+<td><code>docs/progress/A02.md</code></td>
+<td>本文件</td>
+<td>交接</td>
+</tr>
+</tbody>
+</table></div>
+<p>未修改 <code>internal/kv</code>、<code>audit/</code>、<code>docs/contracts/ARCHITECTURE.md</code> 或其他模块。
+产品代码（api 2690 + client 688 + kv 1244 + cmd 121）约 4743 行，不含测试；
+仍只用标准库。</p>
+<h2 id="关键设计">关键设计</h2>
+<h3 id="watch快照与初始化边界">Watch：快照与初始化边界</h3>
+<p>缺省 <code>resourceVersion</code> 的实现没有依赖 KV 的 <code>WatchMostRecent</code>，而是：</p>
+<ol>
+<li><code>kv.Range(prefix)</code> 取一致快照与 revision S；</li>
+<li><code>kv.Watch(prefix, kv.Exact(S))</code> 注册实时订阅（K02 保证注册与 catchup 原子）；</li>
+<li>写 200 header 并 Flush；</li>
+<li>按 <code>ModRevision</code> 升序发完全部合成 <code>ADDED</code>；</li>
+<li>发一条 <code>BOOKMARK</code>，RV=S；</li>
+<li>之后写 Exact 重放与 live 帧。</li>
+</ol>
+<p>这样避免了“KV 公开流中 catchup 与 live 可能交错”的问题，也不需要修改 KV 增加
+初始化标记。S 之前的状态由 Range 给出，S 之后的提交由 Exact 补齐，没有窗口。
+唯一失败模式是 Range 之后立刻发生压缩使 <code>Exact(S)</code> 返回 <code>ErrCompacted</code>：handler
+重新 Range，最多 8 次；超过则把压缩错误映射为 410（此时尚未写 header）。</p>
+<p><code>MostRecent</code> 合成事件的 RV 是对象 <code>ModRevision</code>（可能小于 S），因此不能拿它当
+断点；BOOKMARK 用 S，正好是 C01 断点续传的锚点。</p>
+<h3 id="帧编码">帧编码</h3>
+<p><code>decodeStored(res, value, ev.Revision)</code> 复用 A01 的 RV 投影：合成 ADDED 用 entry
+ModRevision，live 用事件 Revision，DELETE 用 <code>PrevValue</code> + 删除事件 Revision。
+<code>EventPut</code> 的分类用 <code>Synthetic || PrevRevision==0 → ADDED</code>，否则 MODIFIED；删除后
+重建得到 <code>PrevRevision==0</code> 的新 ADDED，与 K8s 语义一致。</p>
+<h3 id="周期-bookmark">周期 bookmark</h3>
+<p><code>Options.BookmarkInterval</code> 默认 30s；测试用 40ms seam。周期 BOOKMARK 的 RV 是该
+连接<strong>已写出</strong>的最大 revision。仅在已有交付时发送：<code>resourceVersion=0</code> 且历史为空
+的空闲流不会凭空产生 bookmark，避免越过尚未投递的事件。快照模式在初始化 BOOKMARK
+之后即可发周期 bookmark。</p>
+<h3 id="慢消费者">慢消费者</h3>
+<p>KV 在私有队列满时向 <code>Errors</code> 发 <code>ErrSlowConsumer</code> 并关闭 <code>Events</code>。handler 写一条
+<code>{"type":"ERROR","object":{Status,code:503,reason:ServiceUnavailable}}</code> 后结束。
+测试用阻塞 <code>ResponseWriter</code> 在真实 handler 上把消费者拖慢并断言最后帧是 503、
+不是 410，同时另一请求仍能 List。</p>
+<h3 id="status">status</h3>
+<p>请求体解码为资源类型；name/namespace 若给出必须匹配（400），RV 必须为正整数
+（422），UID/creationTimestamp 若给出必须匹配（409）。从存储对象深拷贝后只替换
+status，再验证并比较。<code>canonicalJSON</code> 把空 slice/map 归一为缺失，因此 controller
+用 <code>[]</code> 代替 nil 不会触发写。无变化返回当前对象与 RV，不 <code>Put</code>；有变化
+<code>Put(MatchRevision(rv))</code>，冲突 409。普通 <code>PUT &lt;item&gt;</code> 保持 A01 语义（可改 status），
+已写入契约。</p>
+<h3 id="binding">binding</h3>
+<p><code>Binding</code> body 只接受 Pod 路径。校验 name/namespace/kind/apiVersion/target.kind/
+target.name，Node 必须存在（404），Pod 必须存在（404）。未绑定时以当前 RV CAS 写
+<code>spec.nodeName</code>；相同目标幂等；不同目标 409。CAS 冲突后重读，如果并发写者选了同一
+节点则按幂等返回成功，否则 409。没有跨 Node/Pod 事务。</p>
+<h3 id="client">client</h3>
+<p><code>WatchCollection</code> 复制 <code>http.Client</code> 并清空 <code>Timeout</code>，用 <code>bufio.Reader</code> 逐行解码，
+不读完整 body。握手非 2xx 复用 <code>StatusError</code>；ERROR 帧转 <code>*StatusError</code>。<code>Stop</code>
+取消 ctx、关闭 body 并等待 reader 退出；<code>Done</code> 暴露退出。ctx 取消或 Stop 引起的
+读错误不误报。<code>UpdateStatus</code>/<code>GetStatus</code>/<code>BindPod</code> 是窄方法，另提供泛型包装。</p>
+<h3 id="超时与-shutdown">超时与 shutdown</h3>
+<p><code>http.Server</code> 的全局 <code>WriteTimeout</code> 保留给普通请求；watch handler 用
+<code>ResponseController.SetWriteDeadline(time.Time{})</code> 清除本请求期限，并在每帧写前设置
+30s 单帧期限。<code>ReadTimeout</code> 不作用于已完成的请求读取。<code>api.Server.Shutdown</code> 关闭
+内部 stop channel，cmd 在 <code>http.Server.Shutdown</code> 之前调用，避免等待活跃长连接。
+测试 <code>TestWatchOutlivesServerReadAndWriteTimeouts</code>（60ms 服务器超时）、
+<code>TestWatchShutdownEndsActiveStream</code>、<code>TestServeShutsDownWithActiveWatch</code> 固定。</p>
+<h2 id="测试">测试</h2>
+<p>新增/改写的关键测试（全部走真实 HTTP）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题</th>
+<th>测试</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>header 及时、快照全在初始化 BOOKMARK 前、live 在后</td>
+<td><code>TestWatchDefaultDeliversSnapshotBeforeBookmarkThenLive</code></td>
+</tr>
+<tr>
+<td>空 store 也有初始化 BOOKMARK</td>
+<td><code>TestWatchDefaultOnEmptyStoreBookmarksInitialization</code></td>
+</tr>
+<tr>
+<td>显式 0 重放 + live</td>
+<td><code>TestWatchExplicitZeroReplaysThenLive</code></td>
+</tr>
+<tr>
+<td>List→Exact 并发写不丢</td>
+<td><code>TestWatchExactResumesAfterRevision</code>、<code>TestWatchListThenExactUnderConcurrentWrites</code></td>
+</tr>
+<tr>
+<td>DELETE 完整对象</td>
+<td><code>TestWatchDeleteFrameCarriesPreviousObject</code></td>
+</tr>
+<tr>
+<td>410 只在压缩</td>
+<td><code>TestWatchCompactedRevisionIsHTTP410</code></td>
+</tr>
+<tr>
+<td>慢消费者非 410</td>
+<td><code>TestWatchSlowConsumerGets503ErrorFrame</code></td>
+</tr>
+<tr>
+<td>RV 格式</td>
+<td><code>TestWatchInvalidResourceVersionIs422</code></td>
+</tr>
+<tr>
+<td>周期 bookmark seam</td>
+<td><code>TestWatchPeriodicBookmarkUsesShortInterval</code></td>
+</tr>
+<tr>
+<td>取消/服务退出</td>
+<td><code>TestWatchRequestCancellationEndsStream</code>、<code>TestWatchShutdownEndsActiveStream</code></td>
+</tr>
+<tr>
+<td>超时不影响流</td>
+<td><code>TestWatchOutlivesServerReadAndWriteTimeouts</code></td>
+</tr>
+<tr>
+<td>MODIFIED/ADDED 分类</td>
+<td><code>TestWatchLiveUpdateIsModified</code></td>
+</tr>
+<tr>
+<td>命名空间/全命名空间/cluster</td>
+<td><code>TestWatchNamespaceIsolation</code>、<code>TestWatchAllNamespacesCollection</code>、<code>TestWatchClusterScopedNode</code></td>
+</tr>
+<tr>
+<td>status 保留 spec/identity</td>
+<td><code>TestStatusUpdateReplacesOnlyStatus</code></td>
+</tr>
+<tr>
+<td>no-op 不推进 RV</td>
+<td><code>TestStatusNoOpKeepsResourceVersion</code>、<code>TestStatusNoOpIgnoresEmptyCollectionShapes</code></td>
+</tr>
+<tr>
+<td>CAS 冲突</td>
+<td><code>TestStatusStaleRevisionConflicts</code></td>
+</tr>
+<tr>
+<td>status 校验</td>
+<td><code>TestStatusValidationAndIdentity</code>、<code>TestStatusGetReturnsObject</code></td>
+</tr>
+<tr>
+<td>Node/RS/Deployment status</td>
+<td><code>TestStatusWorksForNodeAndAppsResources</code></td>
+</tr>
+<tr>
+<td>普通 PUT 语义保留</td>
+<td><code>TestStatusAndBindingDoNotChangeNormalPutBehaviour</code></td>
+</tr>
+<tr>
+<td>binding 未绑定/幂等/异目标/Node 不存在</td>
+<td><code>TestBindingSetsNodeName</code>、<code>TestBindingIsIdempotentForSameNode</code>、<code>TestBindingDifferentNodeConflicts</code>、<code>TestBindingValidation</code></td>
+</tr>
+<tr>
+<td>binding 并发</td>
+<td><code>TestBindingConcurrentExactlyOneWins</code></td>
+</tr>
+<tr>
+<td>client 流式/stop/cancel/错误帧/410</td>
+<td><code>TestClientWatchSnapshotBookmarkAndLive</code>、<code>TestClientWatchStopWaitsForReader</code>、<code>TestClientWatchContextCancelWaitsForExit</code>、<code>TestClientWatchErrorFrameIsStatusError</code>、<code>TestClientWatchCompactedHandshakeIsStatusError</code>、<code>TestClientWatchStopWithUnreadEvents</code>、<code>TestClientWatchServerGoneIsNetworkError</code></td>
+</tr>
+<tr>
+<td>client status/bind</td>
+<td><code>TestClientUpdateStatus</code>、<code>TestClientUpdateStatusNetworkErrorIsWrapped</code>、<code>TestClientBindPod</code></td>
+</tr>
+<tr>
+<td>cmd shutdown</td>
+<td><code>TestServeShutsDownWithActiveWatch</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="实际命令与结果">实际命令与结果</h2>
+<p>工作目录 <code>/home/imeltgp/VSCode/minik8s/reference</code>；日志与真实进程输出保存在
+<code>/tmp/opencode/a02/</code>（<code>final-*.log</code>、<code>test-verbose.log</code>、<code>process-verify.log</code>、
+<code>process-check/</code>、<code>SHA256SUMS</code>）。Go 1.27.3 linux/amd64。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>命令</th>
+<th>退出码</th>
+<th>结果</th>
+<th>日志</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>go test -count=1 -timeout=120s ./...</code></td>
+<td>0</td>
+<td>四包通过</td>
+<td><code>final-test.log</code></td>
+</tr>
+<tr>
+<td><code>go test -race -count=1 -timeout=120s ./...</code></td>
+<td>0</td>
+<td>四包通过</td>
+<td><code>final-race.log</code></td>
+</tr>
+<tr>
+<td><code>go vet ./...</code></td>
+<td>0</td>
+<td>无输出</td>
+<td><code>final-vet.log</code></td>
+</tr>
+<tr>
+<td><code>go build -buildvcs=false ./...</code></td>
+<td>0</td>
+<td>无输出</td>
+<td><code>final-build.log</code></td>
+</tr>
+<tr>
+<td><code>gofmt -l .</code></td>
+<td>0</td>
+<td>无输出</td>
+<td><code>final-gofmt.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=1 -v ./internal/api ./internal/client ./cmd/mini-apiserver</code></td>
+<td>0</td>
+<td>126 顶层 PASS + 55 子测试 PASS，0 FAIL/SKIP</td>
+<td><code>test-verbose.log</code></td>
+</tr>
+<tr>
+<td><code>go test -json -count=1 ./...</code></td>
+<td>0</td>
+<td>pass 事件 255（含包级），skip=1（K01 子进程 helper），fail=0</td>
+<td><code>/tmp/opencode/a02/test-json.jsonl</code></td>
+</tr>
+<tr>
+<td><code>go test -count=5 ./internal/api ./internal/client</code></td>
+<td>0</td>
+<td>全通过</td>
+<td><code>repeat5.log</code></td>
+</tr>
+<tr>
+<td><code>go test -count=3 -shuffle=on ./internal/api ./internal/client</code></td>
+<td>0</td>
+<td>全通过</td>
+<td><code>shuffle.log</code></td>
+</tr>
+<tr>
+<td><code>GOMAXPROCS=1 go test -count=5 ./internal/api</code></td>
+<td>0</td>
+<td>全通过</td>
+<td><code>gomaxprocs1.log</code></td>
+</tr>
+<tr>
+<td><code>python3 scripts/verify-a01.py --output /tmp/opencode/a02/process-check</code></td>
+<td>0</td>
+<td>11 组真实进程断言通过</td>
+<td><code>process-verify.log</code>、<code>process-check/summary.json</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>go build</code> 需要 <code>GOFLAGS=-buildvcs=false</code>（<code>/home/imeltgp</code> 下有空的 <code>.git</code> 目录），
+与 A01 记录一致；<code>go test</code>/<code>go vet</code> 不受影响。</p>
+<h3 id="真实进程验收">真实进程验收</h3>
+<p><code>scripts/verify-a01.py</code> 仍然构建并运行真实 <code>mini-apiserver</code>，两次启动共用一个 WAL：</p>
+<ol>
+<li>create/get/list、RV=1；</li>
+<li>update→RV=2、旧 RV 409；</li>
+<li>SIGKILL 后重启，UID/内容/RV 保留；</li>
+<li>条件删除：旧 RV 409、正确 RV 200、最终 list RV=3；</li>
+<li><code>watch=true</code>：空集合先收到初始化 BOOKMARK（RV=3）→ 创建后收到 ADDED
+   （RV 与创建响应一致）→ 删除后收到带完整 spec 的 DELETED；</li>
+<li><code>resourceVersion=0</code>：按 create/update/delete/create/delete 顺序收到
+   <code>ADDED,MODIFIED,DELETED,ADDED,DELETED</code>；</li>
+<li>List RV→创建→Exact 恢复，恰好收到该创建；</li>
+<li><code>resourceVersion=-2</code> → 422 <code>Invalid</code>；</li>
+<li>status：PUT 后 spec/UID 保留，重复 PUT/PATCH 的 RV 不变，旧 RV → 409；</li>
+<li>binding：绑定成功、同节点幂等、异节点 409、缺 Pod/Node 均 404；</li>
+<li>保持一个活跃 watch 时 SIGTERM：退出码 0，shutdown 0.003s，日志含 <code>stopped</code>。</li>
+</ol>
+<h2 id="与-a01-契约的差异">与 A01 契约的差异</h2>
+<ul>
+<li><code>GET &lt;collection&gt;?watch=true</code> 由 405 改为 200 流；<code>watch=false</code>/缺省仍 List。</li>
+<li><code>/status</code> 与 <code>/binding</code> 由 405 改为真实 handler。Service/Endpoints 的 <code>/status</code>
+  仍 404（对象无 status 字段）。</li>
+<li>普通 <code>PUT &lt;item&gt;</code> 仍允许改 status（明确记录为简化）。</li>
+<li><code>PATCH /status</code> 与 PUT 同义，不是 JSON merge patch。</li>
+<li>旧 <code>TestStatusAndBindingRoutesAreNotImplementedYet</code>、<code>TestWatchQueryIsNotImplementedYet</code>
+  分别改写为 <code>TestSubresourceRoutingBoundaries</code>、<code>TestWatchFalseAndAbsentStillList</code>；
+  非 GET watch 的方法拒绝移到 <code>TestWatchRejectsNonGet</code>。</li>
+</ul>
+<h2 id="未做项与已知边界">未做项与已知边界</h2>
+<ul>
+<li>Watch 的 <code>labelSelector</code>/<code>fieldSelector</code>/<code>timeoutSeconds</code>/<code>allowWatchBookmarks</code>
+  未实现，参数被忽略。</li>
+<li>没有跨 Node/Pod 事务；Node 删除与 binding 并发时可能绑定到刚消失的 Node。</li>
+<li>周期 BOOKMARK 在 <code>resourceVersion=0</code> 且无历史、无 live 事件时不发送。</li>
+<li><code>Exact(N)</code> 的 N 大于当前 revision 时进入等待，不返回 410；不验证 N 是否有
+  对应对象。</li>
+<li>压缩期间的 Range→Exact 重试上限 8 次；超过时返回 410。极端持续压缩下客户端需
+  重试。</li>
+<li>client 的 <code>Watch.Errors</code> 只交付一个终止原因；不提供自动重连。</li>
+<li>未运行 VM、容器运行时或任何宿主机特权命令；全部为普通用户态测试与本地 TCP。</li>
+</ul>
+<h2 id="文件校验和">文件校验和</h2>
+<pre><code class="language-text">e5d9bc2063e0d0ff46e1c460219dae03a749cb0ae4f9f23c336a263bf99046a2  reference/internal/api/errors.go
+a3d3b296805f996bfa7de69aa0a2ee0b7fd39fa650932c4819dd07cee5249f67  reference/internal/api/resources.go
+a4872fca8fde8a7a1261897054ea96ccc80a2c90aedc9bfaeebe2ed855eb3c04  reference/internal/api/server.go
+a7429de0f88e7f5b0bb4feaa68bf5fe145088a0f15064eb1cc6d59802163138e  reference/internal/api/server_test.go
+758cd954d554e7fe399292d57a9eadd966eadaa3d17dd512ebdda7c2a4a7378f  reference/internal/api/status.go
+4f0950a82ff773d7c324c8e60ae318e1d495a10302a8bb589826ad61385af110  reference/internal/api/subresource.go
+6224e418082d981bf5025e437e0ae3a965964a1ab8f35c04aa3a1031c0c0480d  reference/internal/api/subresource_test.go
+d3595c6bb89a06090635ca18c60c67aa3f95e312b5cffb20951bdfc8ade37867  reference/internal/api/types.go
+9d26831eca67951bc0554f0f9945a7f05ce96c0bb3df6cdc35f54c223630ce52  reference/internal/api/watch.go
+37b326ceaaa8615586c572db11ae93cbc769c6236aae404dd54bd3bdde0e3140  reference/internal/api/watch_test.go
+47bd3bdc03f8694d23786e4c8d2c78d35dae04f80af3e2b086e2139c4f042f7d  reference/internal/client/client.go
+03394196ddabcbe0163efbf5961eb5ecfbd0929c0c5a73802832f209a212e3cb  reference/internal/client/watch_test.go
+415159ac5103a48163d3a5606a4ce7480152dcb0a623dc80e8d970c64fbe7e6d  reference/cmd/mini-apiserver/main.go
+d1beee0ba9a533b0a07f856a7248e6aea14ffb5657073bd1767cc8916fd8f87c  reference/cmd/mini-apiserver/main_test.go
+07f84027d0dcc23c2d0620829cb25108587ee719aa122057986b7ef512f0244c  reference/scripts/verify-a01.py
+71bb8d1eacb8c9e394a1d0b39a595e41b1964b6dc33dc0bfb9b2b926078ed7e8  docs/contracts/api.md
+3dc2a814fc3bbc912445b4cd62579ca62552966d75ee3e8634683eeb29f06b5d  reference/README.md
+df1a867ea2483b7c9ddaac23ee057d1bb180c9a680b443a0289446f004ad8c90  reference/README-zh_cn.md
+</code></pre>
+<p><code>internal/kv</code> 与 <code>go.mod</code> 的校验和与 TAKEOVER-A01/A01 交接完全一致
+（<code>store.go b2f9f507…</code>、<code>watch.go fdea292a…</code>、<code>log.go 5ff722c7…</code>、<code>go.mod c63ae97b…</code>），
+完整清单（含 <code>internal/kv</code> 与 docs）见 <code>/tmp/opencode/a02/SHA256SUMS</code>。</p>
+<h2 id="c01-依赖">C01 依赖</h2>
+<p>C01（Informer/WorkQueue）应按以下方式使用：</p>
+<ol>
+<li><code>client.List</code> 获取快照与 <code>metadata.resourceVersion</code>；</li>
+<li><code>client.WatchCollection(ctx, r, ns, client.WatchOptions{ResourceVersion: listRV})</code>
+   从列表 RV 之后续接，不丢并发写；</li>
+<li>需要“先快照后增量”的一次性同步时使用缺省 Watch：持续读 ADDED 直到 BOOKMARK；
+   BOOKMARK 的 RV 是快照边界，之后的帧才是增量；</li>
+<li><code>Watch.Stop()</code>/<code>Watch.Done()</code> 管理生命周期；<code>*client.StatusError</code> 的 410
+   （压缩）与 503（慢消费者）都触发重新 List；</li>
+<li><code>UpdateStatus</code>/<code>BindPod</code> 是 N01/S01 的写入口；CAS 409 时 GET 后重试。</li>
+</ol>
+<h2 id="下一步">下一步</h2>
+<p>C01 落地后，S01 可用 <code>/binding</code> 完成调度写回；N01 用 <code>/status</code> 上报 Node/Pod 状态。
+两者都不需要再改 Watch 或 status 的线上语义。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 7.1：筛选可用节点 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-71筛选可用节点">Stage 7.1：筛选可用节点</h1>
+<h2 id="你的任务">你的任务</h2>
+<p>从未绑定 Pod 出发，选择 Ready 且有可用容量的节点。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>本小节实现 scheduler（调度器）：给尚未填写 <code>spec.nodeName</code> 的 Pod 选择节点，并通过 API 的
+绑定操作写入选择结果。测试器调用 <code>start scheduler 数据目录</code>，由启动脚本运行 API 与调度器。</p>
+<p>测试器通过 HTTP 提供 Node 与 Pod 对象，再观察 Pod 的绑定结果。本节可在普通用户环境运行；
+节点状态由测试输入提供，容器的实际运行由后续集成测试验证。CPU 数字使用毫核，1000 表示一个核；
+内存数字使用字节。</p>
+<h2 id="测试会提供三种-node">测试会提供三种 Node</h2>
+<p>测试器创建不健康节点、零 CPU 容量节点和健康节点。健康信息放在：</p>
+<pre><code class="language-json">{"conditions":[{"type":"Ready","status":"True"}]}
+</code></pre>
+<p>这是 Node.status 的一部分，True 在本课程里是字符串。不健康节点的状态为 False，健康节点
+还提供 allocatable.cpu=2000 与可用内存。测试再创建请求 500 毫核、nodeName 为空的 Pod。</p>
+<p>它等待该 Pod 的 nodeName 指向唯一的健康节点。</p>
+<h2 id="实现思路">实现思路</h2>
+<p>List 节点和待调度 Pod，按 Ready 与资源条件过滤候选节点。选择后读取 Pod 当前版本，调用
+第四小节实现的 binding 接口提交选择。暂时没有候选节点时保持未绑定，稍后重新尝试。</p>
+<p><a href="../stages/07-scheduler.html">本小节的原理与接口说明</a></p>
+<h2 id="测试方式">测试方式</h2>
+<p><code>SCHED-FILTER</code>：不健康与零容量节点被排除，Pod 绑定到健康节点。</p>
+<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
+<h2 id="提交代码">提交代码</h2>
+<p>当前进度位于本阶段时执行：</p>
+<pre><code class="language-bash">minik8s submit
+</code></pre>
+<p>临时练习本阶段，保留课程进度：</p>
+<pre><code class="language-bash">minik8s submit --stage 7.1
+</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

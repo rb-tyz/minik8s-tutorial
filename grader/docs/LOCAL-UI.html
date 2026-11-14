@@ -1,0 +1,86 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>本地课程界面 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="本地课程界面">本地课程界面</h1>
+<p>安装命令后，在学习者项目目录运行：</p>
+<pre><code class="language-bash">minik8s serve
+</code></pre>
+<p>浏览器访问 <strong>http://127.0.0.1:7331</strong>。指定项目或端口：</p>
+<pre><code class="language-bash">minik8s --project /path/to/my-minik8s serve --port 7331
+</code></pre>
+<p>服务使用 Python 标准库；页面的 HTML、CSS、JavaScript 随测试器分发，运行时无需下载前端依赖。
+停止服务使用 Ctrl+C，服务会请求正在运行的提交停止，并等待测试器清理。</p>
+<h2 id="页面操作">页面操作</h2>
+<p>左侧按十个小节分组，展开后选择小 stage。任务说明展示当前一项能力，实现提示提供建议与检查点。
+点击任务内的接入说明、首次提交或小节原理链接，可在页面中阅读，再返回当前 stage。
+配置按钮设置 adapter、driver、API 地址、CNI、fixture 和 VM UUID，配置保存在当前项目。</p>
+<p>“提交本阶段”验收当前进度，通过后保存下一阶段。浏览其他阶段时，按钮变为“练习本阶段”，
+该模式保留课程进度。“全量测试”从第一阶段开始，遇首个失败停止。
+测试结果显示逐项状态、失败原因与运行日志；取消后等待清理完成，再允许发起下一次提交。</p>
+<p>页面与终端共用 <code>.minik8s/</code>。在另一个终端提交后，页面会刷新进度。服务重启后读取已有进度
+与最近结果。一个服务对应一个学习者项目。</p>
+<h2 id="实验环境">实验环境</h2>
+<p>普通用户阶段可以在宿主机提交。容器和网络阶段继续在准备好的隔离 KVM 内运行；
+测试器核对实际 VM 身份，服务沿用这项检查。</p>
+<p>在 KVM 中启动课程服务后，可以使用 SSH 转发同一端口，在本机浏览器访问：</p>
+<pre><code class="language-bash">ssh -N -L 7331:127.0.0.1:7331 user@lab-vm
+</code></pre>
+<p>第一小节的文件准备和 VM 内提交见 <a href="FIRST-SUBMISSION.html">首次提交</a>。</p>
+<h2 id="本地-http-接口">本地 HTTP 接口</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法与路径</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET /api/course</td>
+<td>十个小节、70 个 stage 正文、项目路径、配置及本次服务的提交令牌</td>
+</tr>
+<tr>
+<td>GET /api/material?path=grader/docs/ADAPTER.md</td>
+<td>读取一份公开文档，返回 path 和 markdown</td>
+</tr>
+<tr>
+<td>GET /materials/grader/docs/ADAPTER.md</td>
+<td>在课程页面中打开文档，支持段落锚点</td>
+</tr>
+<tr>
+<td>GET /api/state</td>
+<td>当前进度、最近结果、活动任务 ID、提交历史 ID</td>
+</tr>
+<tr>
+<td>GET /api/jobs/ID</td>
+<td>本次服务内任务的状态、事件、诊断日志和结果</td>
+</tr>
+<tr>
+<td>GET /api/runs/RUN_ID</td>
+<td>已保存的 CLI 提交结果</td>
+</tr>
+<tr>
+<td>POST /api/config</td>
+<td>更新配置字段，空字符串移除该字段</td>
+</tr>
+<tr>
+<td>POST /api/submissions</td>
+<td><code>{}</code> 提交当前阶段，<code>{"stage":"3.4"}</code> 临时练习，<code>{"all":true}</code> 全量测试</td>
+</tr>
+<tr>
+<td>POST /api/jobs/ID/cancel</td>
+<td>请求取消，等待 CLI 清理</td>
+</tr>
+</tbody>
+</table></div>
+<p>写请求携带 <code>X-Minik8s-Token</code>。服务固定监听 127.0.0.1，核对 Host、Origin 与令牌，
+静态文件使用固定映射。提交参数转为 CLI 参数数组，CLI 负责版本化进度、项目锁和测试执行。
+每个服务同时运行一个提交；来自另一个终端的项目锁也会被遵守。</p>
+<p>任务状态为 running、cancelling、cancelled、passed、failed。前端轮询任务状态与事件，
+持久结果沿用 <a href="COURSE-CLI.html">CLI 协议</a>。</p>
+<h2 id="验证">验证</h2>
+<pre><code class="language-bash">python3 -m unittest discover -s grader/tests -v
+python3 grader/verify-teaching.py
+mkdir -p /tmp/minik8s-reader-check
+node grader/verify-reader.mjs http://127.0.0.1:7331 /tmp/minik8s-reader-check
+</code></pre>
+<p>浏览器检查需先启动课程服务，另需 Node.js 22+ 和本机 Google Chrome。它使用独立无头浏览器，
+检查阶段输入示例、说明链接、表格、中文段落跳转、返回阶段与桌面/窄屏布局，并保存截图。
+此入口只阅读课程材料，保留学习者进度和源码。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
