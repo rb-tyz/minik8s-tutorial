@@ -57,6 +57,12 @@
   "bilingual": {
     "pairs": 470,
     "footnotes": 73,
-    "recorded_edits": 112
+    "recorded_edits": 112,
+    "supplements": {
+      "entries": 120,
+      "chapters": 24,
+      "subsections": 96,
+      "source_commit": "506abffc121e7ad98cdc8f310a9f0a8db69d0843"
+    }
   }
 }

@@ -9,3 +9,9 @@
 [data-mode=both] .lang-en{margin-bottom:10px}.correction-ref{display:block;text-align:right;margin:-8px 0 16px;font-size:14px}
 .correction-notes{border-top:2px solid #abc0d4;margin-top:50px;scroll-margin-top:90px}.correction-notes li{scroll-margin-top:95px;margin-bottom:20px}
 @media print{.reading-controls{position:static}pre{white-space:pre-wrap}}
+
+.editor-supplement{margin:28px 0 36px;padding:18px 22px;background:#f4f7f2;border:1px solid #cad9c5;border-left:4px solid #628451;border-radius:5px;scroll-margin-top:100px}
+.editor-supplement .supplement-label{margin:0;color:#446235;font-size:14px;font-weight:650}
+.editor-supplement h4{font-size:1.12rem;margin:8px 0 14px;line-height:1.5}
+.editor-supplement p{margin:12px 0}.editor-supplement .supplement-sources{border-top:1px solid #d5dfd1;padding-top:10px;font-size:13px;color:#526149}
+@media(max-width:650px){.editor-supplement{padding:14px 15px;margin:22px 0 28px}}
