@@ -2,6 +2,8 @@
 
 Read https://rb-tyz.github.io/minik8s-tutorial/
 
+Choose English, 中文, or 中英对照. The Chinese edition is a faithful full-text translation; 73 correction footnotes cover 112 recorded edits.
+
 Original: [Harut8 / system-design](https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md).
 
 Technical corrections and publication: rb-tyz. The original 24 sections are retained.

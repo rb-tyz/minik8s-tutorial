@@ -53,5 +53,10 @@
     "tutorial/examples/replicaset.json",
     "tutorial/examples/service.json",
     "tutorial/labs/run-core.py"
-  ]
+  ],
+  "bilingual": {
+    "pairs": 470,
+    "footnotes": 73,
+    "recorded_edits": 112
+  }
 }
