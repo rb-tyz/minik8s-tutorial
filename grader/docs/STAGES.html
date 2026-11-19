@@ -1,12 +1,15 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>原教程小节的综合验收 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="原教程小节的综合验收">原教程小节的综合验收</h1>
-<p>课程的 70 个细分 stage 见 <a href="../content/README.html">课程目录</a>。本页保留底层脚本的十个编号，
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>原教程小节的综合验收 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../content/README.html">课程关卡</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="原教程小节的综合验收">原教程小节的综合验收</h1>
+<p>课程的 170 个细分 stage 见 <a href="../content/README.html">课程目录</a>。本页保留底层脚本的十个编号，
 用于小节综合回归；这里的 stage 对应<a href="../../tutorial/minik8s-corrected.html#5-the-build-order-ten-phases">原教程 §5 的构建顺序</a>。
+日常 <code>minik8s submit</code> 会为每个 stage 自动创建一次性 KVM；本节列出的检查都在该 guest 内执行，
+普通用户态检查仍在 guest 内运行，只是不额外申请 namespace、cgroup 或网络特权。
 stage 0 是前置阅读；stage 1–10 才需要提交程序。每一项测试都有固定 ID，可用 --only 单独运行。
 完整 stage 通过时 summary.json 的 stage_complete=true；单项通过则记录该项结果。</p>
 <h2 id="stage-1--手工运行容器6">Stage 1 · 手工运行容器（§6）</h2>
-<p>提供一个能启动 /fixture 的运行时适配器。测试器在获批 VM 内读取实际 /proc 和 cgroup，
+<p>提供一个能启动 /fixture 的运行时适配器。测试器在自动创建的 guest 内读取实际 /proc 和 cgroup，
 检查返回 PID 属于本次进程，并比较它与节点的 namespace。输入包括 rootfs、参数、唯一标记，
-CPU=50 毫核、memory=64 MiB、pids=512。实现可复用 runc。</p>
+CPU=50 毫核、memory=64 MiB、pids=512。第一小节每次 <code>container-run</code> 都带 <code>--cgroup-parent</code>，
+指向 guest 内预建的绝对 cgroup v2 父路径；<code>reset</code> 只清理自己的任务和 child cgroup，父路径由测试器回收。实现可复用 runc。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -56,7 +59,7 @@ CPU=50 毫核、memory=64 MiB、pids=512。实现可复用 runc。</p>
 </table></div>
 <h2 id="stage-3--kv8">Stage 3 · KV（§8）</h2>
 <p>KV 可以是库，因此使用 JSONL 包装器调用它的公开操作。包名、文件编码、map 类型和 Go
-函数签名由实现者决定。普通用户即可运行。watch 输出以提交版本排序。</p>
+函数签名由实现者决定。本阶段在自动创建的 guest 内以普通用户运行。watch 输出以提交版本排序。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -196,7 +199,7 @@ CPU=50 毫核、memory=64 MiB、pids=512。实现可复用 runc。</p>
 </table></div>
 <h2 id="stage-7--scheduler12">Stage 7 · Scheduler（§12）</h2>
 <p>启动 API 和 scheduler，创建测试 Node 与 Pod 对象，验证绑定行为。节点状态由测试提供，
-因此本阶段普通用户即可运行；这些检查验收调度，不启动真实容器。测试结束删除本次 Node。</p>
+测试器在 guest 内通过 API 读取 Pod 的绑定结果。测试结束删除本次 Node。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -224,8 +227,8 @@ CPU=50 毫核、memory=64 MiB、pids=512。实现可复用 runc。</p>
 </tbody>
 </table></div>
 <h2 id="stage-8--controllers13">Stage 8 · Controllers（§13）</h2>
-<p>启动 API 和 controller-manager。通过公开 /status 提供 Pod 观察值，先检查控制算法；真实
-容器与数据转发在 stage 10 集成验收。此处提供的观察值只用于 controller 测试。</p>
+<p>启动 API 和 controller-manager。通过公开 /status 提供 Pod 观察值，先检查控制算法；
+本阶段在自动创建的 guest 内以普通用户运行，真实容器与数据转发在 stage 10 集成验收。此处提供的观察值只用于 controller 测试。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>

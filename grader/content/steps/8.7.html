@@ -1,28 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 8.7：撤下未就绪的后端 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-87撤下未就绪的后端">Stage 8.7：撤下未就绪的后端</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在 Pod 不再 Ready 时更新 Endpoints。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节实现控制器：持续比较“用户想要的对象”与“API 中已有的对象”，补做创建、更新或删除。
-测试器调用 <code>start controllers 数据目录</code>，由脚本启动 API 和控制器程序。</p>
-<p>测试器主要通过 HTTP 创建父对象，再查询子对象。这里可在普通用户环境运行，Pod 的就绪状态
-由测试器通过 <code>/status</code> 写入，便于先检查控制算法。实际容器和通信在第十小节组合验收。</p>
-<h2 id="ready-变化要影响后端集合">Ready 变化要影响后端集合</h2>
-<p>测试器先完成 8.6，让一个后端进入 Endpoints，然后把 Pod 的观察状态改为：</p>
-<pre><code class="language-json">{"phase":"Running","podIP":"10.77.0.9","containerStatuses":[{"name":"app","state":"Running","ready":false}]}
-</code></pre>
-<p>这是 Pod.status 的内容。Pod 仍在运行，但 ready=false 表示它暂时不适合接收请求。
-测试器等待 Endpoints 中的地址集合变空。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>把 Pod 就绪变化作为重算相关 Service 的原因。每轮从当前匹配且就绪的 Pod 生成后端，
-让离开就绪集合的地址被移除。</p>
-<p><a href="../stages/08-controllers.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 8.7：缩容并删除多余 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-87缩容并删除多余-pod">Stage 8.7：缩容并删除多余 Pod</h1>
+<p>当测试器把 RS.spec.replicas 从 3 调到 1 时，让控制器删除多余的自有 Pod。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>CTRL-READY</code>：原后端出现，Ready=False 后地址列表变空。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>控制器处理 PATCH 后，按 RS 的 UID 查询只剩一个子 Pod。</p>
+<pre><code class="language-text">PATCH RS replicas=3 -&gt; 1
+wait 自有 Pod 数=1
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 8.7
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>删除自有 Pod 时使用 UID/RV；不要删除同名但不同归属的对象。</p>
+<p><a href="../stages/08-controllers.html">第 8 节接入说明</a> · 沿用 <a href="8.3.html">8.3 replicas=N 创建 N 个 Pod</a> · 检查 <code>RS-SCALE-DOWN</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

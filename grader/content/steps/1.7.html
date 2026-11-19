@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 1.7：结束后台任务并允许重复 reset · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-17结束后台任务并允许重复-reset">Stage 1.7：结束后台任务并允许重复 reset</h1>
+<p>为 <code>my-minik8s</code> 增加 <code>reset</code>。测试器先启动后台 fixture，再用同一个 <code>--state-dir</code> 调用 reset。你的程序要找到并结束这个任务，等它消失后返回成功；再次 reset 也应成功。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>第一次 reset 后 PID 不再存在；第二次 reset 返回 ok=true。</p>
+<pre><code class="language-text">./bin/my-minik8s container-run --state-dir work --rootfs lab/rootfs \
+  --cgroup-parent "$parent" --nonce run-a --wait false --arg=pause
+# 保存响应中的 pid，供检查使用
+./bin/my-minik8s reset --state-dir work
+./bin/my-minik8s reset --state-dir work
+# 两次 reset 的 stdout 都是 {"ok":true}
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>把 PID/身份写入 state-dir；发送可处理的终止信号并等待，避免留下僵尸或复用错 PID。</p>
+<p><a href="../stages/01-containers.html">第 1 节接入说明</a> · 沿用 <a href="1.6.html">1.6 启动后台任务并返回身份</a> · 检查 <code>PROCESS-RESET</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

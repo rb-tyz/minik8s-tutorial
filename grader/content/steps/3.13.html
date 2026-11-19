@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.13：带条件删除 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-313带条件删除">Stage 3.13：带条件删除</h1>
+<p>让 KV 的 delete 检查 expect。测试器先给过期版本，再给当前版本，分别核对键是否还能读到。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>旧条件返回 conflict 且键可读；当前条件删除后 get 为 not_found。</p>
+<pre><code class="language-text"># 版本数字为示例，测试器使用前一步响应中的实际版本
+POST /call  {"op":"put","key":"cas/delete","value":"x","expect":0}
+POST /call  {"op":"delete","key":"cas/delete","expect":0}
+POST /call  {"op":"get","key":"cas/delete"}
+POST /call  {"op":"delete","key":"cas/delete","expect":1}
+POST /call  {"op":"get","key":"cas/delete"}
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>删除同样要先比较 expect 再移除，失败时不能丢数据。</p>
+<p><a href="../stages/03-kv.html">第 3 节接入说明</a> · 沿用 <a href="3.11.html">3.11 旧版本条件更新失败</a> · 检查 <code>KV-CAS-DELETE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

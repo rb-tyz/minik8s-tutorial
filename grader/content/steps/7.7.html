@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 7.7：过大的 Pod 不阻塞小 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-77过大的-pod-不阻塞小-pod">Stage 7.7：过大的 Pod 不阻塞小 Pod</h1>
+<p>当队首 Pod 超出节点容量时，让 scheduler 继续考虑后续能放下的 Pod。测试器分别读取大、小两个 Pod 的 nodeName。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>huge 未绑定；small 绑定成功。</p>
+<pre><code class="language-text">Node cpu=1000
+Pod huge cpu=1500 -&gt; 未绑定
+Pod small cpu=100 -&gt; 绑定
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>无候选节点时返回可重试错误，不要阻塞整个队列。</p>
+<p><a href="../stages/07-scheduler.html">第 7 节接入说明</a> · 沿用 <a href="7.4.html">7.4 已绑定 Pod 占用容量</a> · 检查 <code>SCHED-STARVATION</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

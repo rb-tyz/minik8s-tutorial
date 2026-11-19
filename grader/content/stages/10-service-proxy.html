@@ -1,44 +1,78 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 10：给一组 Pod 提供固定访问地址 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-10给一组-pod-提供固定访问地址">小节 10：给一组 Pod 提供固定访问地址</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在本小节，你要实现 Service Proxy，把发往 ClusterIP 的请求转发到就绪的 Pod 后端。
-此前的存储、调度、运行时、控制器和 Pod 网络也会一起参与测试。对应教程第 15 节。</p>
-<h2 id="service-地址与-pod-地址">Service 地址与 Pod 地址</h2>
-<p>Pod 可以删除、重建或扩容，访问者仍然使用同一个 Service 地址。Endpoints 提供当前后端，
-Proxy 根据这些后端维护转发规则。</p>
-<p>下面的地址和端口用于说明一次转发：</p>
-<pre><code class="language-text">客户端 → Service 10.96.0.10:80 → Pod 10.244.0.2:8080
-                             → Pod 10.244.0.3:8080
-</code></pre>
-<p>Service 端口是客户端访问的端口，targetPort 是应用实际监听的端口。协议也是端口身份的
-一部分，TCP 和 UDP 要分别处理。</p>
-<h2 id="从一条转发规则开始">从一条转发规则开始</h2>
-<p>iptables 的 DNAT 可以把目标 Service 地址和端口改成某个后端的地址和端口。
-有多个后端时，为新连接分配目标。测试会建立多次连接，从不同响应标记判断两个后端都能到达。</p>
-<p>还要处理 Pod 经 Service 访问自己的情况，即 hairpin。检查请求与响应的完整路径，
-让回复能够返回原来的连接。</p>
-<h2 id="后端会变化规则也要更新">后端会变化，规则也要更新</h2>
-<p>当一个 Pod 离开 Endpoints，Proxy 应撤掉对应后端规则，让后续连接使用剩余后端。
-Service 删除后，撤掉它的 VIP 转发规则。重启时重新读取当前对象并恢复自己的规则，
-同时保留其他程序的 NAT 链。</p>
-<h2 id="测试如何运行">测试如何运行</h2>
-<p>测试器在隔离 KVM 中启动完整组件和真实 Pod 网络，通过实际请求验证：</p>
-<ul>
-<li><code>PROXY-E2E</code>：创建对象、Pod 运行、副本补齐、滚动更新和 ClusterIP 响应。</li>
-<li><code>PROXY-PORTS</code>：多端口、TCP/UDP、hairpin，以及删除 Service 后的规则回收。</li>
-<li><code>PROXY-BALANCE</code>：新连接访问到两个后端，删除一个后继续访问剩余后端。</li>
-<li><code>PROXY-FOREIGN</code>：重启 Proxy 后仍能通信，无关 NAT 链保留。</li>
-</ul>
-<p>本小节按原教程验收 ClusterIP；双节点静态路由沿用
-<a href="../../README.html#%E5%8F%8C%E8%8A%82%E7%82%B9">补充测试</a>。</p>
-<h2 id="提示">提示</h2>
-<p>先完成一个 TCP Service 到一个后端的访问，再加入多个后端、UDP 与更新处理。
-为自己生成的链和规则保存可识别的归属，重复调谐时按当前 Service/Endpoints 重建对应状态。
-排查访问失败时，同时观察 Pod 监听端口、Endpoints 内容和实际 NAT 规则。</p>
-<h2 id="按-stage-提交">按 stage 提交</h2>
-<p>本小节分为 7 个 stage。先查看第一项任务：</p>
-<pre><code class="language-bash">minik8s stage 10.1
-</code></pre>
-<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
-临时练习时指定完整编号，例如：</p>
-<pre><code class="language-bash">minik8s submit --stage 10.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>10. Proxy：ClusterIP、多端口、回环访问与规则更新 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="10-proxyclusterip多端口回环访问与规则更新">10. Proxy：ClusterIP、多端口、回环访问与规则更新</h1>
+<p>使用真实 Pod 网络与 iptables。逐项验收单端口、端口映射、多后端、UDP、hairpin、后端撤销、Service 删除、重启保留规则与完整端到端流程。</p>
+<h2 id="本节接入">本节接入</h2>
+<p>本节运行完整组件。测试器通过 API 创建 Pod、Service 并读取分配的 ClusterIP（简称 VIP）。测试用的后端 Pod 可以省略 nodeName 和资源请求。scheduler 先绑定节点，kubelet 启动 fixture 并报告 podIP，Endpoints 控制器发布就绪后端，你的 proxy 据此配置转发。发向 VIP 的请求最终收到 fixture 返回的正文，first、second 等字符串用来识别后端。</p>
+<p>测试器在 KVM 节点或指定的 Pod 内发起 TCP/UDP 请求，按关卡检查 NAT 表、撤销后端、重启 proxy。通过 <code>--adapter ./test-hooks --fixture ./lab</code> 提供组件启停脚本和探针；guest 需要运行时、网络和测试镜像。<a href="../../docs/ADAPTER.html#%E6%B5%8B%E8%AF%95%E9%95%9C%E5%83%8F%E4%B8%8E-registry">镜像与运行时准备</a></p>
+<h2 id="关卡">关卡</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>新增行为</th>
+<th>检查 ID</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10.1</td>
+<td><a href="../steps/10.1.html">单后端 TCP ClusterIP</a></td>
+<td><code>PROXY-TCP</code></td>
+</tr>
+<tr>
+<td>10.2</td>
+<td><a href="../steps/10.2.html">两个 TCP 端口分别映射</a></td>
+<td><code>PROXY-MULTIPORT</code></td>
+</tr>
+<tr>
+<td>10.3</td>
+<td><a href="../steps/10.3.html">UDP 端口转发</a></td>
+<td><code>PROXY-UDP</code></td>
+</tr>
+<tr>
+<td>10.4</td>
+<td><a href="../steps/10.4.html">后端经 VIP 访问自身</a></td>
+<td><code>PROXY-HAIRPIN</code></td>
+</tr>
+<tr>
+<td>10.5</td>
+<td><a href="../steps/10.5.html">多个后端都可到达</a></td>
+<td><code>PROXY-MULTI-BACKEND</code></td>
+</tr>
+<tr>
+<td>10.6</td>
+<td><a href="../steps/10.6.html">删除后端后撤下其目标</a></td>
+<td><code>PROXY-REMOVE-BACKEND</code></td>
+</tr>
+<tr>
+<td>10.7</td>
+<td><a href="../steps/10.7.html">删除 Service 撤掉 VIP 规则</a></td>
+<td><code>PROXY-SERVICE-DELETE</code></td>
+</tr>
+<tr>
+<td>10.8</td>
+<td><a href="../steps/10.8.html">Proxy 重启后恢复转发</a></td>
+<td><code>PROXY-RESTART</code></td>
+</tr>
+<tr>
+<td>10.9</td>
+<td><a href="../steps/10.9.html">重启保留无关 NAT 规则</a></td>
+<td><code>PROXY-FOREIGN</code></td>
+</tr>
+<tr>
+<td>10.10</td>
+<td><a href="../steps/10.10.html">数字 targetPort 映射</a></td>
+<td><code>PROXY-NUMERIC-TARGET</code></td>
+</tr>
+<tr>
+<td>10.11</td>
+<td><a href="../steps/10.11.html">无就绪后端时不转发</a></td>
+<td><code>PROXY-ENDPOINTS-WAIT</code></td>
+</tr>
+<tr>
+<td>10.12</td>
+<td><a href="../steps/10.12.html">完整 MiniK8s 黑盒流程</a></td>
+<td><code>PROXY-E2E</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>教程：<a href="https://rb-tyz.github.io/minik8s-tutorial/?lang=both#15-phase-10--mini-proxy-services-via-iptables">§15 mini-proxy</a> · <a href="../../docs/ADAPTER.html">接入说明</a> · <a href="../../docs/COURSE-CLI.html">提交、回归与排错</a></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

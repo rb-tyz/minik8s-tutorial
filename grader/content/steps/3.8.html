@@ -1,32 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.8：处理过旧的订阅位置 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-38处理过旧的订阅位置">Stage 3.8：处理过旧的订阅位置</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>清理事件历史，并区分可续接边界与过旧版本。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节验收你的键值存储。测试器启动 <code>--driver</code> 指向的可执行程序，把本轮数据目录作为
-<code>os.Args[1]</code> 传入，然后不断往 stdin 写单行 JSON。你从消息的 <code>op</code> 字段判断操作，向 stdout
-返回一行 JSON；同一个进程中的多次请求应操作同一份存储。
-需要保存数据时，先用 <code>os.MkdirAll</code> 创建传入的目录。</p>
-<p>例如 <code>./bin/my-minik8s /tmp/course-run/work/driver</code> 表示启动你的程序，并把这个目录交给它保存数据。
-本阶段可在普通用户环境运行。程序收到 <code>close</code> 后清理并正常结束。
-<a href="../../docs/ADAPTER.html#stage-3">接入说明</a> 解释完整消息格式。</p>
-<h2 id="历史窗口的边界">历史窗口的边界</h2>
-<p>compact 用来回收旧事件历史。例如当前已经有版本 1、2，发送：</p>
-<pre><code class="language-json">{"op":"compact","revision":1}
-{"op":"watch","watch":"edge","prefix":"compact/","revision":1}
-</code></pre>
-<p>从边界 1 继续时，仍应收到版本大于 1 的事件。随后测试器把边界移到更晚位置，再以早于
-边界的正版本订阅，这时返回 <code>{"ok":false,"code":"expired"}</code>。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>分别记录当前数据、事件历史和已压缩边界。订阅位置等于边界时可以续接，早于边界时告知
-调用方重新取得快照。当前键值仍由普通 get/list 读取。</p>
-<p><a href="../stages/03-kv.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.8：保留创建版本 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-38保留创建版本">Stage 3.8：保留创建版本</h1>
+<p>给 KV 记录保留首次创建时的 createRevision。测试器覆盖同一键时，entry.revision 增加，createRevision 仍是首次写入的版本。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>KV-COMPACT</code>：边界版本可续接，更早的正版本返回 expired。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>createRevision 不随后续覆盖变化。</p>
+<pre><code class="language-text">POST /call  {"op":"put","key":"create/a","value":"one"}
+POST /call  {"op":"put","key":"create/a","value":"two"}
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 3.8
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>保存 entry 时区分“首次创建”与“本次修改”；不要用当前 revision 重建 createRevision。</p>
+<p><a href="../stages/03-kv.html">第 3 节接入说明</a> · 沿用 <a href="3.7.html">3.7 成功提交递增版本</a> · 检查 <code>KV-CREATEREV</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

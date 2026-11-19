@@ -1,36 +1,14 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 2.3：启动容器并列举任务 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-23启动容器并列举任务">Stage 2.3：启动容器并列举任务</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>启动已创建的容器，并让查询和 List 反映实际运行状态。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>测试器仍然启动你用 <code>--driver</code> 指定的程序，通过 stdin/stdout 一问一答地交换单行 JSON。
-本小节用这条通道调用容器运行时；你可以在程序内调用自己的运行时模块，也可以调用已有
-containerd 的客户端。CRI 是编排组件调用容器运行时的一组操作接口。</p>
-<p>测试器传入一个工作目录作为 <code>os.Args[1]</code>。后续请求里的容器或 sandbox ID 都来自你之前
-返回的结果。<code>sandbox-1</code>、<code>container-1</code> 是下文示例中的 ID；实际运行时按真实返回值继续调用。</p>
-<p>正式提交在实验 KVM 内执行，环境要先准备运行时、基础测试镜像和本地镜像仓库。
-<a href="../../docs/ADAPTER.html#stage-2">接入说明</a> 列出了环境与各操作字段。</p>
-<h2 id="让已有任务开始运行">让已有任务开始运行</h2>
-<p>测试器先创建 sandbox 和容器，再发送：</p>
-<pre><code class="language-json">{"op":"container-start","id":"container-1"}
-{"op":"container-status","id":"container-1"}
-{"op":"container-list","sandbox":"sandbox-1"}
-</code></pre>
-<p>start 完成后回复 <code>{"ok":true}</code>。status 应返回 state=CONTAINER_RUNNING，list 返回的 items
-数组应包含这个容器，例如：</p>
-<pre><code class="language-json">{"ok":true,"items":[{"id":"container-1"}]}
-</code></pre>
-<p>pause 程序会持续运行，适合检查这一状态。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>按容器 ID 调用运行时的启动操作，然后从实际状态回答 status 与 list。保持创建时的身份，
-避免启动时另造一个无法被后续请求找到的任务。</p>
-<p><a href="../stages/02-cri.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 2.3：创建但不启动容器 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-23创建但不启动容器">Stage 2.3：创建但不启动容器</h1>
+<p>实现 <code>container-create</code>，在给定 sandbox 中创建应用容器并返回容器 ID。测试器紧接着查询状态，此时应用还没有启动。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>CRI-START</code>：状态变为 CONTAINER_RUNNING，List 中包含同一个容器 ID。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>状态为 CONTAINER_CREATED，ID 来自真实运行时。</p>
+<pre><code class="language-text">./bin/my-minik8s sandbox-run --state-dir work
+# 将返回的 id 记为 $sid
+./bin/my-minik8s container-create --state-dir work --sandbox "$sid" --arg=pause
+# 将返回的 id 记为 $cid
+./bin/my-minik8s container-status --state-dir work --id "$cid"
+# stdout: {"ok":true,"state":"CONTAINER_CREATED"}
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 2.3
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>区分 create 与 start。保存应用容器 ID 与所属 sandbox 的关联。</p>
+<p><a href="../stages/02-cri.html">第 2 节接入说明</a> · 沿用 <a href="2.1.html">2.1 创建 sandbox 并查询就绪</a> · 检查 <code>CRI-CREATE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

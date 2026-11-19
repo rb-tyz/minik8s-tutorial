@@ -1,30 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 9.4：重复删除已经消失的网络 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-94重复删除已经消失的网络">Stage 9.4：重复删除已经消失的网络</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在 namespace 已消失时继续释放地址与连接。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>CNI 是运行时为容器配置网络的调用约定。本节需要一个可执行网络程序，用 <code>--cni</code> 指定。
-它每次处理一次调用：从环境变量读取操作类型和目标，从 stdin 读取一份配置 JSON，完成后退出。
-这与前三节持续读取多行请求的程序不同。</p>
-<p>测试器会在实验 KVM 内创建本轮独占的网络 namespace（一套独立网络视图），把它的路径放进
-<code>CNI_NETNS</code>，接口名称放进 <code>CNI_IFNAME</code>，容器身份放进 <code>CNI_CONTAINERID</code>。诊断写 stderr；
-ADD 成功时 stdout 返回 CNI JSON 结果，成功退出码为 0。字段例子见
-<a href="../../docs/ADAPTER.html#cni-%E5%92%8C%E6%B5%8B%E8%AF%95%E4%BE%9D%E8%B5%96">CNI 调用</a>。</p>
-<h2 id="删除可能发生在一部分资源已经消失之后">删除可能发生在一部分资源已经消失之后</h2>
-<p>测试器先 ADD 分配网络，随后先删掉 namespace，再以原 ID 和配置调用 DEL 两次。
-两次都应成功退出 0。</p>
-<p>CNI_NETNS 指向的路径此时已经不存在，但地址记录等其他本轮资源仍可能需要释放。
-重复执行删除称为幂等删除：处理已经完成的部分后，最终仍得到“资源已回收”的结果。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>逐项检查并回收本轮资源，允许接口、namespace 或地址记录已经被先前步骤删除。
-保留其他容器的分配与连接。把路径不存在这种已完成状态与真实操作失败区分开处理。</p>
-<p><a href="../stages/09-cni.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 9.4：分配多个不同地址 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-94分配多个不同地址">Stage 9.4：分配多个不同地址</h1>
+<p>给同一子网内的两个容器依次分配可用地址。测试器对两个不同的 CNI_CONTAINERID 调用 ADD，检查各自响应。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>CNI-DEL</code>：namespace 缺失和重复 DEL 都能成功。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>按调用顺序，在 10.249.7.0/29 中分别取得 10.249.7.2、10.249.7.3。</p>
+<pre><code class="language-text">ADD：容器 A → 10.249.7.2
+ADD：容器 B → 10.249.7.3
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 9.4
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>按容器 ID 持久化分配状态；不要每次 ADD 都从 .2 开始。</p>
+<p><a href="../stages/09-cni.html">第 9 节接入说明</a> · 沿用 <a href="9.3.html">9.3 结果与内核状态一致</a> · 检查 <code>IPAM-ALLOC</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

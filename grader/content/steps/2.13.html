@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 2.13：拉取并运行缺失镜像 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-213拉取并运行缺失镜像">Stage 2.13：拉取并运行缺失镜像</h1>
+<p>实现 <code>image-pull</code>。测试器先确认本轮新 tag 没有缓存，再让你的程序拉取镜像、查询镜像 ID，并用它创建容器读取镜像内的 <code>/pull-proof</code>。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>拉取前 <code>image-status</code> 返回 <code>ok:false</code>，拉取后返回非空镜像 ID。容器能从该镜像读取 <code>/pull-proof</code>，最终状态为 CONTAINER_EXITED，退出码为 0。</p>
+<pre><code class="language-text"># $image 是测试器为本轮生成的新 tag，$sid 是本轮 sandbox ID
+./bin/my-minik8s image-status --state-dir work --image "$image"
+./bin/my-minik8s image-pull --state-dir work --image "$image"
+./bin/my-minik8s image-status --state-dir work --image "$image"
+./bin/my-minik8s container-create --state-dir work --sandbox "$sid" --image "$image" --arg=read --arg=/pull-proof
+# 用创建响应中的 id 启动容器，再查询其终态
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>镜像仓库为本轮分配一个新 tag。镜像层可以复用；测试器最终用该 tag 创建容器，让 fixture 读取镜像内的 <code>/pull-proof</code>。</p>
+<p><a href="../stages/02-cri.html">第 2 节接入说明</a> · 沿用 <a href="2.12.html">2.12 查询不存在的镜像</a> · 检查 <code>CRI-IMAGE-PULL</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

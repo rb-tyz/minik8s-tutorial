@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 8.22：多端口 Endpoints · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-822多端口-endpoints">Stage 8.22：多端口 Endpoints</h1>
+<p>Service 有两个命名端口时，让 Endpoints 控制器分别解析 Pod 的容器端口，并在 subsets 中发布两个后端端口。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>测试器汇总 Endpoints.subsets[].ports[] 的 port，排序后恰好为 8080、8081。</p>
+<pre><code class="language-text">Pod ports first=8080,second=8081
+Service ports 18080-&gt;first,18081-&gt;second
+wait subsets 中 8080 与 8081 各出现
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>每个 Service 端口分别计算，同名端口不能互相覆盖。</p>
+<p><a href="../stages/08-controllers.html">第 8 节接入说明</a> · 沿用 <a href="8.18.html">8.18 命名 targetPort 解析</a> · 检查 <code>EPS-MULTI-PORT</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

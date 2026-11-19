@@ -1,34 +1,12 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.4：拒绝旧版本覆盖 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-34拒绝旧版本覆盖">Stage 3.4：拒绝旧版本覆盖</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>实现带 expect 前置条件的更新。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节验收你的键值存储。测试器启动 <code>--driver</code> 指向的可执行程序，把本轮数据目录作为
-<code>os.Args[1]</code> 传入，然后不断往 stdin 写单行 JSON。你从消息的 <code>op</code> 字段判断操作，向 stdout
-返回一行 JSON；同一个进程中的多次请求应操作同一份存储。
-需要保存数据时，先用 <code>os.MkdirAll</code> 创建传入的目录。</p>
-<p>例如 <code>./bin/my-minik8s /tmp/course-run/work/driver</code> 表示启动你的程序，并把这个目录交给它保存数据。
-本阶段可在普通用户环境运行。程序收到 <code>close</code> 后清理并正常结束。
-<a href="../../docs/ADAPTER.html#stage-3">接入说明</a> 解释完整消息格式。</p>
-<h2 id="expect-是写入的前置条件">expect 是写入的前置条件</h2>
-<p>CAS 指比较后再更新。本阶段使用 expect 描述调用方读到的版本：</p>
-<pre><code class="language-json">{"op":"put","key":"cas","value":"old","expect":0}
-{"op":"put","key":"cas","value":"new","expect":1}
-{"op":"put","key":"cas","value":"wrong","expect":1}
-</code></pre>
-<p>expect=0 表示键必须不存在；正整数表示当前版本必须相同。例子里的第二条成功后，第三条
-已经过时，应返回 <code>{"ok":false,"code":"conflict"}</code>。实际 expect 使用前一次响应的版本。</p>
-<p>测试器还会重复以 expect=0 创建已有键，并再次 get，确认最终仍是 new。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>把比较版本和提交修改放在同一个临界区。冲突时保留原值与版本。省略 expect 的请求沿用
-无条件写入，便于前几阶段和其他调用方使用。</p>
-<p><a href="../stages/03-kv.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.4：按前缀列举 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-34按前缀列举">Stage 3.4：按前缀列举</h1>
+<p>让 KV 的 list 根据请求里的 prefix 筛选键。测试器写入 pods/ 和 nodes/ 两组键，再只查询 pods/。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>KV-CAS</code>：当前版本更新成功，旧版本和重复创建返回 conflict，值保持正确。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>entries 恰好是 pods/a、pods/b，不含 nodes/n。</p>
+<pre><code class="language-text">POST /call  {"op":"put","key":"pods/a","value":"a"}
+POST /call  {"op":"put","key":"pods/b","value":"b"}
+POST /call  {"op":"put","key":"nodes/n","value":"n"}
+POST /call  {"op":"list","prefix":"pods/"}
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 3.4
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>用 strings.HasPrefix 等简单匹配；不要把 prefix 当作完整键。</p>
+<p><a href="../stages/03-kv.html">第 3 节接入说明</a> · 沿用 <a href="3.1.html">3.1 写入并读取一个键</a> · 检查 <code>KV-LIST-PREFIX</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

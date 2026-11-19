@@ -1,35 +1,13 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 2.2：创建但暂不启动容器 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-22创建但暂不启动容器">Stage 2.2：创建但暂不启动容器</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在已有 sandbox 中创建应用容器。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>测试器仍然启动你用 <code>--driver</code> 指定的程序，通过 stdin/stdout 一问一答地交换单行 JSON。
-本小节用这条通道调用容器运行时；你可以在程序内调用自己的运行时模块，也可以调用已有
-containerd 的客户端。CRI 是编排组件调用容器运行时的一组操作接口。</p>
-<p>测试器传入一个工作目录作为 <code>os.Args[1]</code>。后续请求里的容器或 sandbox ID 都来自你之前
-返回的结果。<code>sandbox-1</code>、<code>container-1</code> 是下文示例中的 ID；实际运行时按真实返回值继续调用。</p>
-<p>正式提交在实验 KVM 内执行，环境要先准备运行时、基础测试镜像和本地镜像仓库。
-<a href="../../docs/ADAPTER.html#stage-2">接入说明</a> 列出了环境与各操作字段。</p>
-<h2 id="创建和启动是两次操作">创建和启动是两次操作</h2>
-<p>测试器先完成 2.1 的 sandbox 创建，再发以下请求：</p>
-<pre><code class="language-json">{"op":"container-create","sandbox":"sandbox-1","args":["pause"]}
-</code></pre>
-<p>sandbox 字段指定这个应用容器属于哪个运行环境。环境已提供基础镜像，args 指定镜像中
-测试程序的参数。成功后返回容器身份，例如 <code>{"ok":true,"id":"container-1"}</code>。</p>
-<p>接着查询它：</p>
-<pre><code class="language-json">{"op":"container-status","id":"container-1"}
-</code></pre>
-<p>预期 state 为 CONTAINER_CREATED。此时任务已准备好，应用入口还未启动。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>把容器配置与所属 sandbox 一起交给运行时的创建操作，保存返回的容器 ID。查询时按这个 ID
-找到同一任务，将运行时状态映射到 CONTAINER_CREATED。下一阶段再处理启动。</p>
-<p><a href="../stages/02-cri.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 2.2：删除 sandbox · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-22删除-sandbox">Stage 2.2：删除 sandbox</h1>
+<p>实现 <code>sandbox-remove</code>，删除测试器按返回 ID 指定的 sandbox。随后查询这个 ID 时，你的程序要返回业务错误。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>CRI-CREATE</code>：查询新容器得到 CONTAINER_CREATED。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>删除返回 ok=true；后续 status 为非成功的业务错误，而不是伪造 READY。</p>
+<pre><code class="language-text">./bin/my-minik8s sandbox-run --state-dir work
+# 将返回的 id 记为 $sid
+./bin/my-minik8s sandbox-remove --state-dir work --id "$sid"
+./bin/my-minik8s sandbox-status --state-dir work --id "$sid"
+# 最后一次查询返回 ok:false
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 2.2
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>删除后同步更新自己的记录；不要仍返回缓存的旧状态。</p>
+<p><a href="../stages/02-cri.html">第 2 节接入说明</a> · 沿用 <a href="2.1.html">2.1 创建 sandbox 并查询就绪</a> · 检查 <code>CRI-SANDBOX-REMOVE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

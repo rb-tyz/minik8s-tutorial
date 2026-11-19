@@ -1,39 +1,39 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 1.4：限制 CPU、内存与进程数 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-14限制-cpu内存与进程数">Stage 1.4：限制 CPU、内存与进程数</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>把容器任务加入独立 cgroup，并应用输入的资源限制。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>测试器会把你编译的程序作为一个长期运行的子进程启动。例如：</p>
-<pre><code class="language-text">./bin/my-minik8s /tmp/course-run/work/driver
-</code></pre>
-<p><code>./bin/my-minik8s</code> 是你的程序；后面的路径是测试器分配给这一轮的工作目录，在 Go 中通过
-<code>os.Args[1]</code> 读取。测试器把一行 JSON 写进你的标准输入（stdin），你的程序处理后向标准输出
-（stdout）写一行 JSON。调试日志写到标准错误（stderr）。接入选项 <code>--driver</code> 指向的就是这个程序。</p>
-<p>本小节的正式提交在获批的实验 KVM 内执行。测试程序与目录的准备见
-<a href="../../docs/FIRST-SUBMISSION.html">从空 main 到第一次提交</a>。</p>
-<h2 id="资源数字怎样落到内核">资源数字怎样落到内核</h2>
-<p>这次仍启动 pause 后台任务。请求中的资源字段为：</p>
-<pre><code class="language-json">{"cpu":50,"memory":67108864,"pids":512}
-</code></pre>
-<p>cpu 使用毫核，50 表示 0.05 个核；memory 使用字节，67108864 是 64 MiB；pids 限制任务中
-可创建的进程/线程数量。cgroup 是 Linux 给一组进程记账和设置配额的机制。</p>
-<p>测试器从 <code>/proc/&lt;pid&gt;/cgroup</code> 找到任务实际所属的 cgroup，再读取其 cgroup v2 文件：</p>
-<pre><code class="language-text">cpu.max    → 5000 100000
-memory.max → 67108864
-pids.max   → 512
-</code></pre>
-<p>CPU 的两个数表示每 100000 微秒周期最多运行 5000 微秒。返回 JSON 仍是 ok、id、pid，配额
-通过实际内核文件检查。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>为本轮任务创建独立 cgroup，设置限制并把任务加入其中。可以在 runc 配置中传入这些限制。
-沿用 1.2 的进程记录，reset 时先结束任务，再回收本轮 cgroup。</p>
-<p><a href="../stages/01-containers.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 1.4：根目录不存在时让 container-run 报错退出 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-14根目录不存在时让-container-run-报错退出">Stage 1.4：根目录不存在时让 container-run 报错退出</h1>
+<p>测试器故意把一个不存在的目录传给 <code>--rootfs</code>。里面的 <code>fixture exit 0</code> 无法启动，你的 <code>my-minik8s container-run</code> 应向 stderr 写出原因，自己以非零状态退出。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>CONTAINER-CGROUP</code>：cpu.max 为 5000 100000，memory.max 为 67108864，pids.max 为 512。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>测试器在本轮工作目录中选取一个不存在的 missing-root。默认命令行接口下，my-minik8s 应返回非零退出码，且 stdout 不输出成功 JSON。具体非零数值和 stderr 措辞由实现决定。</p>
+<pre><code class="language-text"># 在测试用的 KVM 内，假设 work/missing-root 不存在
+./bin/my-minik8s container-run --state-dir work/driver --rootfs work/missing-root \
+  --nonce run-a --wait true --arg=exit --arg=0 --cgroup-parent "$parent"
+# stderr 示例：启动 fixture 失败：work/missing-root 不存在
+# stdout 为空
+echo "$?"    # 示例：1，这是 my-minik8s 自己的退出码
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 1.4
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p><code>--arg=exit --arg=0</code> 是准备交给 fixture 的参数。只有 fixture 启动后，这个 0 才有机会成为它的退出码。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>情况</th>
+<th>fixture 发生了什么</th>
+<th>my-minik8s 自己的退出码</th>
+<th>my-minik8s 的 stdout</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.3：正常 rootfs，要求执行 <code>exit 42</code></td>
+<td>已启动，随后退出 42</td>
+<td>0</td>
+<td><code>{"ok":true,"exitCode":42}</code></td>
+</tr>
+<tr>
+<td>1.4：rootfs 不存在，要求执行 <code>exit 0</code></td>
+<td>未启动，没有任务退出码</td>
+<td>非零，例如 1</td>
+<td>可以留空</td>
+</tr>
+</tbody>
+</table></div>
+<p>如果你的实现另起子进程准备根目录，它启动失败时也要把错误传回 <code>container-run</code>，让这个命令退出非零。只有 fixture 确实运行并结束，才把它的退出码填进 JSON。</p>
+<p><a href="../stages/01-containers.html">第 1 节接入说明</a> · 沿用 <a href="1.1.html">1.1 等待一个普通子进程完成</a> · 检查 <code>PROCESS-LAUNCH-FAIL</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

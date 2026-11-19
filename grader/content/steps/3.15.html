@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.15：补发订阅前的写入 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-315补发订阅前的写入">Stage 3.15：补发订阅前的写入</h1>
+<p>补发 list 与 watch 之间发生的写入。测试器保存 list 的版本，写入一个匹配键，再带着旧版本登记 watch，最后用 next 读取这次 PUT。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>next 返回 PUT 事件，value=gap。</p>
+<pre><code class="language-text"># 版本数字为示例，测试器使用前一步响应中的实际版本
+POST /call  {"op":"list","prefix":"replay/"}
+POST /call  {"op":"put","key":"replay/item","value":"gap"}
+POST /call  {"op":"watch","watch":"gap","prefix":"replay/","revision":0}
+POST /call  {"op":"next","watch":"gap","timeoutMs":500}
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>保留按 revision 排序的事件历史；watch 注册时设置游标而不是只看未来通知。</p>
+<p><a href="../stages/03-kv.html">第 3 节接入说明</a> · 沿用 <a href="3.9.html">3.9 返回一致的列表快照版本</a> · 检查 <code>KV-WATCH-REPLAY</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

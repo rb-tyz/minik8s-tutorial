@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 3.17：删除事件保留旧值 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-317删除事件保留旧值">Stage 3.17：删除事件保留旧值</h1>
+<p>删除已订阅的键时，给订阅者留下 DELETE 事件。测试器用 next 检查删除前的值和这次删除的版本。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>DELETE 事件的 value=full，revision 大于此前的 PUT revision。</p>
+<pre><code class="language-text"># 版本数字为示例，测试器使用前一步响应中的实际版本
+POST /call  {"op":"list","prefix":"delete-event/"}
+POST /call  {"op":"watch","watch":"del","prefix":"delete-event/","revision":0}
+POST /call  {"op":"put","key":"delete-event/a","value":"full"}
+POST /call  {"op":"next","watch":"del","timeoutMs":500}
+POST /call  {"op":"delete","key":"delete-event/a"}
+POST /call  {"op":"next","watch":"del","timeoutMs":500}
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>在移除当前值前保留旧 entry，用删除提交分配新 revision。</p>
+<p><a href="../stages/03-kv.html">第 3 节接入说明</a> · 沿用 <a href="3.16.html">3.16 推送实时新增</a> · 检查 <code>KV-WATCH-DELETE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

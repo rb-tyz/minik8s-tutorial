@@ -1,32 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 5.1：发送初始对象快照 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-51发送初始对象快照">Stage 5.1：发送初始对象快照</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>缺省 resourceVersion 时，先通过 Watch 发送已有对象。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本阶段继续运行 API 服务。测试器用 HTTP 建立 Watch 长连接，再从另一个连接创建或删除对象。
-Watch 表示持续订阅对象变化；返回格式是 NDJSON，即每行一个 JSON 事件。</p>
-<p>本页 URL 使用 <code>demo</code> 作为 namespace 示例。一个事件中的 <code>type</code> 表示变化类型，<code>object</code> 是对应
-对象。<code>resourceVersion</code> 是对象或快照的存储版本，用于说明从哪里接收后续变化。
-API 的启动和停止仍使用 <code>--adapter</code> 指定的脚本目录。</p>
-<h2 id="一条长连接返回多个事件">一条长连接返回多个事件</h2>
-<p>测试器先创建一个 Pod，再请求：</p>
-<pre><code class="language-http">GET /api/v1/namespaces/demo/pods?watch=true
-</code></pre>
-<p>请求没有指定 resourceVersion，表示先读取当前对象。连接中应出现一行 ADDED 事件，例如：</p>
-<pre><code class="language-json">{"type":"ADDED","object":{"metadata":{"name":"initial","uid":"pod-a","resourceVersion":"1"},"spec":{"containers":[{"name":"app","image":"minik8s.local/fixture:n01"}]}}}
-</code></pre>
-<p>这里展示响应的相关字段。测试器按创建响应的真实 UID 查找对象，并核对 spec 中的容器名称。
-连接会保持打开，直到测试结束。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>从一致的集合快照开始，把已有对象逐个编码为 ADDED 行并刷新响应。后续变化继续使用同一
-连接发送。连接断开时释放对应的订阅与等待协程。</p>
-<p><a href="../stages/05-watch.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 5.1：发送初始 ADDED 快照 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-51发送初始-added-快照">Stage 5.1：发送初始 ADDED 快照</h1>
+<p>为 apiserver 的 Pod 集合增加 HTTP Watch。测试器先建一个 Pod，再打开 watch=true 的长连接；你的服务把已存在的 Pod 作为第一批 ADDED 事件写回连接。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>WATCH-SNAPSHOT</code>：已有 Pod 的完整对象出现在初始 ADDED 中。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>收到 ADDED，UID 与 spec 来自已存在对象。</p>
+<pre><code class="language-text">POST /api/v1/namespaces/NS/pods → 创建 initial，记录 UID
+GET /api/v1/namespaces/NS/pods?watch=true
+流中收到 ADDED，object.metadata.uid 是刚才的 UID，spec 中有应用容器 app。
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 5.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>先 Range 取得一致快照，再逐个编码 ADDED。</p>
+<p><a href="../stages/05-watch.html">第 5 节接入说明</a> · 沿用 <a href="4.1.html">4.1 创建并读取 Pod</a> · 检查 <code>WATCH-SNAPSHOT</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,40 +1,128 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 3：保存集群状态 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-3保存集群状态">小节 3：保存集群状态</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在本小节，你要实现一个带版本的键值存储。它需要支持读写、删除、按前缀列举、条件更新、
-订阅变更和重启恢复。API Server 会用它保存 Pod、Node 等对象。对应教程第 8 节。</p>
-<h2 id="给每次变化一个版本">给每次变化一个版本</h2>
-<p>先想象只有一个键 <code>pods/web</code>。创建它、修改它、删除它，是三次不同的状态变化。
-为每次提交分配递增的 revision，调用方就能描述“我看到的是哪个版本”。</p>
-<pre><code class="language-text">revision 1：创建 pods/web，值为 v1
-revision 2：修改 pods/web，值为 v2
-revision 3：删除 pods/web
-</code></pre>
-<p>对象还应保留首次创建时的版本。按前缀 List 时，返回的对象集合和快照 revision 应来自同一次观察。</p>
-<h2 id="更新前确认对象没有被别人改过">更新前，确认对象没有被别人改过</h2>
-<p>假设两个调用方都读到 revision 1。第一个调用方提交修改，产生 revision 2；第二个调用方
-再以旧版本更新时，应得到 conflict。这种比较版本后再写入的操作称为 CAS。</p>
-<p>版本检查和写入需要在同一个受保护的提交过程内完成。否则，两次更新可能都通过检查。</p>
-<h2 id="从-list-接到-watch">从 List 接到 Watch</h2>
-<p>调用方读完快照后再订阅变更，中间可能已经发生写入。Watch 要从快照版本之后补发事件，
-再继续发送新事件。删除事件也要带上旧值，调用方才能知道被删掉的对象是什么。</p>
-<p>历史事件可以压缩。订阅位置早于可保留边界时，返回 expired，让调用方重新 List。
-确认写入的数据和版本还应在存储进程被强杀、重新打开原目录后恢复。</p>
-<h2 id="测试如何运行">测试如何运行</h2>
-<p>通过 <a href="../../docs/ADAPTER.html#stage-3">JSONL driver</a> 调用你的 KV；存储文件格式由你选择。</p>
-<ul>
-<li><code>KV-REVISION</code>、<code>KV-CAS</code>：版本递增、创建版本和冲突保护。</li>
-<li><code>KV-WATCH</code>：补发 List/Watch 间隙的事件，并保留删除前值。</li>
-<li><code>KV-COMPACT</code>：边界可续接，过旧位置返回 expired。</li>
-<li><code>KV-RECOVERY</code>：确认写入后强杀进程，再打开同一数据目录。</li>
-</ul>
-<h2 id="提示">提示</h2>
-<p>先用一把锁理顺提交顺序，再加入事件历史和等待订阅者的通知机制。持久化可以从简单追加
-记录开始，保证“返回写入成功”的数据能够恢复。文件编码和内部容器类型可以自行选择。</p>
-<h2 id="按-stage-提交">按 stage 提交</h2>
-<p>本小节分为 9 个 stage。先查看第一项任务：</p>
-<pre><code class="language-bash">minik8s stage 3.1
-</code></pre>
-<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
-临时练习时指定完整编号，例如：</p>
-<pre><code class="language-bash">minik8s submit --stage 3.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>3. KV：版本、CAS、快照、Watch 与恢复 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="3-kv版本cas快照watch-与恢复">3. KV：版本、CAS、快照、Watch 与恢复</h1>
+<p>把键值操作拆成读取、覆盖、前缀、版本、条件写入、删除、订阅历史与压缩、重启恢复。每个断言只要求本关公开的字段。</p>
+<h2 id="本节接入">本节接入</h2>
+<p>测试器执行 <code>./bin/my-minik8s kv --listen HOST:PORT --state-dir DIR</code>，随后把每个操作作为单独的 HTTP POST 请求发到 <code>/call</code>。同一轮使用同一个服务进程。正常业务响应使用 HTTP 200，JSON 的 <code>ok</code> 字段表示操作结果；键不存在等错误带 <code>code</code>。</p>
+<p>entry.revision 表示这个键最后一次修改时的版本；list 的 revision 表示整份快照的版本。watch 注册带名字的订阅，next 请求读取该订阅的一次结果。关卡例子给出的数字版本用于说明请求顺序；客户端实际使用上一次响应中的版本。测试结束由测试器停止服务，3.22 还会强杀后用同一个目录重新启动。</p>
+<h2 id="关卡">关卡</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>新增行为</th>
+<th>检查 ID</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3.1</td>
+<td><a href="../steps/3.1.html">写入并读取一个键</a></td>
+<td><code>KV-PUT-GET</code></td>
+</tr>
+<tr>
+<td>3.2</td>
+<td><a href="../steps/3.2.html">读取不存在的键</a></td>
+<td><code>KV-GET-MISSING</code></td>
+</tr>
+<tr>
+<td>3.3</td>
+<td><a href="../steps/3.3.html">覆盖已有键</a></td>
+<td><code>KV-OVERWRITE</code></td>
+</tr>
+<tr>
+<td>3.4</td>
+<td><a href="../steps/3.4.html">按前缀列举</a></td>
+<td><code>KV-LIST-PREFIX</code></td>
+</tr>
+<tr>
+<td>3.5</td>
+<td><a href="../steps/3.5.html">列举空前缀结果</a></td>
+<td><code>KV-LIST-EMPTY</code></td>
+</tr>
+<tr>
+<td>3.6</td>
+<td><a href="../steps/3.6.html">按键顺序返回</a></td>
+<td><code>KV-LIST-SORT</code></td>
+</tr>
+<tr>
+<td>3.7</td>
+<td><a href="../steps/3.7.html">成功提交递增版本</a></td>
+<td><code>KV-REVISION</code></td>
+</tr>
+<tr>
+<td>3.8</td>
+<td><a href="../steps/3.8.html">保留创建版本</a></td>
+<td><code>KV-CREATEREV</code></td>
+</tr>
+<tr>
+<td>3.9</td>
+<td><a href="../steps/3.9.html">返回一致的列表快照版本</a></td>
+<td><code>KV-LIST-SNAPSHOT</code></td>
+</tr>
+<tr>
+<td>3.10</td>
+<td><a href="../steps/3.10.html">当前版本条件更新成功</a></td>
+<td><code>KV-CAS-CURRENT</code></td>
+</tr>
+<tr>
+<td>3.11</td>
+<td><a href="../steps/3.11.html">旧版本条件更新失败</a></td>
+<td><code>KV-CAS-STALE</code></td>
+</tr>
+<tr>
+<td>3.12</td>
+<td><a href="../steps/3.12.html">expect=0 的创建条件</a></td>
+<td><code>KV-CAS-CREATE</code></td>
+</tr>
+<tr>
+<td>3.13</td>
+<td><a href="../steps/3.13.html">带条件删除</a></td>
+<td><code>KV-CAS-DELETE</code></td>
+</tr>
+<tr>
+<td>3.14</td>
+<td><a href="../steps/3.14.html">返回删除前记录</a></td>
+<td><code>KV-DELETE</code></td>
+</tr>
+<tr>
+<td>3.15</td>
+<td><a href="../steps/3.15.html">补发订阅前的写入</a></td>
+<td><code>KV-WATCH-REPLAY</code></td>
+</tr>
+<tr>
+<td>3.16</td>
+<td><a href="../steps/3.16.html">推送实时新增</a></td>
+<td><code>KV-WATCH-LIVE</code></td>
+</tr>
+<tr>
+<td>3.17</td>
+<td><a href="../steps/3.17.html">删除事件保留旧值</a></td>
+<td><code>KV-WATCH-DELETE</code></td>
+</tr>
+<tr>
+<td>3.18</td>
+<td><a href="../steps/3.18.html">取消订阅</a></td>
+<td><code>KV-WATCH-CANCEL</code></td>
+</tr>
+<tr>
+<td>3.19</td>
+<td><a href="../steps/3.19.html">等待超时返回空事件</a></td>
+<td><code>KV-WATCH-TIMEOUT</code></td>
+</tr>
+<tr>
+<td>3.20</td>
+<td><a href="../steps/3.20.html">从压缩边界续接</a></td>
+<td><code>KV-COMPACT-BOUNDARY</code></td>
+</tr>
+<tr>
+<td>3.21</td>
+<td><a href="../steps/3.21.html">拒绝过旧游标</a></td>
+<td><code>KV-COMPACT-EXPIRED</code></td>
+</tr>
+<tr>
+<td>3.22</td>
+<td><a href="../steps/3.22.html">强杀后恢复数据与版本</a></td>
+<td><code>KV-RECOVERY</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>教程：<a href="https://rb-tyz.github.io/minik8s-tutorial/?lang=both#8-phase-3--minikv-a-watchable-kv-store">§8 minikv</a> · <a href="../../docs/ADAPTER.html">接入说明</a> · <a href="../../docs/COURSE-CLI.html">提交、回归与排错</a></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 1.8：切换根目录与挂载视图 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-18切换根目录与挂载视图">Stage 1.8：切换根目录与挂载视图</h1>
+<p>让后台 fixture 使用传入的 rootfs 作为根目录，并拥有自己的挂载命名空间。测试器拿你返回的 PID 在 KVM 内读取 <code>/proc/&lt;pid&gt;/root</code> 和 <code>ns/mnt</code>。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>mount namespace 链接与节点不同；任务根目录里能找到 fixture。</p>
+<pre><code class="language-text">./bin/my-minik8s container-run --state-dir work --rootfs lab/rootfs \
+  --cgroup-parent "$parent" --nonce run-iso --cpu 50 --memory 67108864 --pids 512 \
+  --wait false --arg=pause
+# /proc/&lt;pid&gt;/ns/mnt 与节点不同；/proc/&lt;pid&gt;/root/fixture 可执行
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>使用 runc 或自行 unshare(CLONE_NEWNS)+chroot/pivot_root；确保入口已在实际运行。</p>
+<p><a href="../stages/01-containers.html">第 1 节接入说明</a> · 沿用 <a href="1.7.html">1.7 结束后台任务并允许重复 reset</a> · 检查 <code>CONTAINER-ROOTFS</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

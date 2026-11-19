@@ -1,90 +1,131 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>测试器怎样调用你的程序 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="测试器怎样调用你的程序">测试器怎样调用你的程序</h1>
-<p>测试器需要知道两件事：怎样启动你写的程序，以及怎样给它任务、读取结果。
-本页先解释这条连接，再列出具体消息格式。</p>
-<h2 id="从你现在的-main-开始">从你现在的 main 开始</h2>
-<p>前三小节使用标准输入/输出对话。你可以把自己编译的 Go 程序交给测试器：</p>
-<pre><code class="language-bash">minik8s init --driver ./bin/my-minik8s
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>测试器怎样调用你的程序 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../content/README.html">课程关卡</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="测试器怎样调用你的程序">测试器怎样调用你的程序</h1>
+<p>新项目默认使用参数调用或 HTTP。设置 <code>--driver-protocol jsonl</code> 可继续使用旧项目的 JSONL 驱动；新页面按默认接口说明。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>配置</th>
+<th>指向什么</th>
+<th>谁提供</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--driver</code></td>
+<td>被测可执行文件，如 <code>./bin/my-minik8s</code></td>
+<td>你编写，默认 Go 布局由 submit 编译</td>
+</tr>
+<tr>
+<td><code>--fixture</code></td>
+<td>含 <code>rootfs/fixture</code> 的测试文件目录，如 <code>./lab</code></td>
+<td>课程提供 fixture 源码，按首次提交指南编译</td>
+</tr>
+<tr>
+<td><code>--adapter</code></td>
+<td>三个启停脚本所在目录，如 <code>./test-hooks</code></td>
+<td>你提供，测试器调用它们管理服务</td>
+</tr>
+<tr>
+<td><code>--cni</code></td>
+<td>第 9 节要执行的 CNI 插件</td>
+<td>你提供可执行文件</td>
+</tr>
+<tr>
+<td><code>--state-dir</code></td>
+<td>一轮测试中多次调用共用的状态路径</td>
+<td>测试器作为参数传给你的程序，用到时再创建</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="你要实现到什么程度">你要实现到什么程度</h2>
+<p>你要编写接收参数、启动任务、查询状态和清理本轮资源的入口。可以调用 runc 完成 OCI 容器创建，
+也可以自行使用 Linux 接口；验收依据是运行后的行为。复用 runc 时，你仍需生成配置、传递入口参数、
+取得真实 PID/退出码并清理容器。无需重新实现 runc 的全部功能。
+1.1–1.5 依次处理等待、参数、退出码、启动失败和输出；1.6 启动后台任务，1.7 实现 reset。
+1.1 起每次 <code>container-run</code> 都收到测试器提供的 <code>--cgroup-parent</code>；1.1 可以用 <code>os/exec</code> 启动普通进程，也可以直接使用完整运行时。1.8–1.12 逐项加入根目录和 namespace，1.13–1.18 加入资源、安全与多任务清理。第二小节可以接入 containerd 等现成 CRI 运行时。</p>
+<h2 id="后续关卡如何扩展">后续关卡如何扩展</h2>
+<p>每关保留此前已公布的操作名、参数默认值、响应字段和行为。新增函数或分支复用已完成的实现；内部结构可以重构，原有检查继续通过。</p>
+<p>1.1 允许用 <code>os/exec</code> 启动普通进程，也允许直接使用完整容器运行时；不要求同时维护普通和容器两条必需分支。<code>--cpu</code>、<code>--memory</code>、<code>--pids</code> 在后续 stage 才出现。第二小节增加 CRI 操作，继续保留第一小节入口。KV 与 API 增加字段和方法时保留已有字段的含义。</p>
+<p>每次 <code>minik8s submit</code> 自动创建一次性 KVM；<code>minik8s submit --through 3.7</code> 顺序回归 1.1 到 3.7，保留课程进度，也使用同一套自动 VM。</p>
+<h2 id="程序怎样被调用">程序怎样被调用</h2>
+<p>每次操作启动一次你的程序，请求都通过命令行参数传入，stdin 已关闭。命令的格式是：</p>
+<pre><code class="language-bash">./bin/my-minik8s 操作名 --state-dir /tmp/course-run/work/driver [操作参数]
 </code></pre>
-<p>--driver 是课程命令的选项，后面的路径就是要启动的可执行文件。本页把这个程序称为 driver，
-即测试调用的入口。你可以在 main 中读取消息，再调用自己的 Go 函数；也可以另写很薄的包装程序，
-调用已有模块。内部包名和函数名由你决定。</p>
-<p>例如测试器执行：</p>
-<pre><code class="language-text">./bin/my-minik8s /tmp/course-run/work/driver
+<p>在 Go 中，<code>os.Args[1]</code> 是操作名，后面的参数可用 <code>flag.NewFlagSet</code> 解析。
+<code>minik8s init --driver ./bin/my-minik8s</code> 告诉测试器要启动哪个可执行文件。
+测试器通过 <code>--state-dir</code> 把本轮状态路径传给这个程序，同一轮的多次调用复用该路径。
+1.1 只需接收这个参数。后续关卡如果用文件保存跨调用的容器 ID、PID 或运行时标识，再按需创建目录。
+实际容器可由 runc/containerd 的常驻进程管理。
+后台任务应在命令返回后继续运行，并把输出重定向到本轮日志文件或 stderr。</p>
+<p>命令成功完成时向 stdout 输出一个 JSON 对象并退出 0，诊断写 stderr。操作成功时响应含 <code>ok:true</code>。
+已处理的业务错误也用退出码 0，但返回 <code>ok:false</code> 与 <code>code</code>；启动失败、参数错误或内部故障用非零退出码。
+子容器退出 42 时，调用命令本身应退出 0，JSON 中填 <code>exitCode:42</code>。</p>
+<h2 id="reset-具体做什么">reset 具体做什么</h2>
+<p><code>reset</code> 从 1.7 开始实现。1.1–1.5 不调用它，1.6 由测试设施结束本轮普通进程；后面的容器关会在退出清理时调用：</p>
+<pre><code class="language-bash">./bin/my-minik8s reset --state-dir /tmp/course-run/work/driver
 </code></pre>
-<p>程序名后面是本轮数据目录的路径，Go 通过 os.Args[1] 取得。需要保存文件时，由你的程序先用
-os.MkdirAll 创建这个目录。测试器会在恢复测试中再次传入同一路径，持久数据放在这里。</p>
-<p>首次编译、测试文件准备和正式提交的步骤见 <a href="FIRST-SUBMISSION.html">从空 main 到第一次提交</a>。</p>
-<h2 id="jsonl-driver">JSONL driver</h2>
-<p>JSONL 表示一行一个 JSON。测试器往 stdin 写一条请求，等待你的程序往 stdout 写一条响应，
-再发下一条。同一进程处理多条消息；调试和子程序日志写到 stderr，留 stdout 给协议。</p>
-<pre><code class="language-json">{"op":"put","key":"basic","value":"one"}
-</code></pre>
-<p>这是第三小节的一条请求。op 指定操作，key/value 是它的参数。你完成处理后返回一行：</p>
-<pre><code class="language-json">{"ok":true,"entry":{"key":"basic","value":"one"}}
-</code></pre>
-<p>ok 表示操作是否完成，其他字段依操作变化。错误响应使用 ok=false，并提供 code 和可选的
-message。例如旧版本冲突返回 <code>{"ok":false,"code":"conflict"}</code>。</p>
-<p>关闭约定：收到 close 后，清理并以退出码 0 结束，测试器不再等待响应。前三小节的 driver
-沿用同一份进程调用形式；MINIK8S_STAGE 环境变量提供当前小节编号，供需要分派的程序使用。</p>
+<p>它读取本轮保存的资源身份，结束仍运行的应用容器/任务，等待其退出，删除这些容器与 sandbox，
+回收本轮创建的 namespace 句柄、cgroup 和临时运行目录。仅回收本轮拥有的资源，保留课程源码、
+测试日志、fixture、共享镜像及其他程序的资源。首次 reset 关只需处理普通进程，随后逐项扩展到已实现的资源。
+<code>--cgroup-parent</code> 指向的父 cgroup 由测试器预建和回收；reset 只清理自己记录的任务和在其下创建的 child cgroup，
+不要删除父路径或其中其他任务的 cgroup。重复执行也应成功；资源已不存在时继续处理其余资源。清理完成后输出 <code>{"ok":true}</code> 并退出 0。
+这是资源清理命令，课程学习进度保存在 <code>.minik8s/</code>，reset 不修改它。新接口无需 <code>close</code> 子命令。</p>
 <h2 id="stage-1">Stage 1</h2>
-<p>第一小节处理“启动任务”的消息。完整请求示例：</p>
-<pre><code class="language-json">{"op":"container-run","rootfs":"/tmp/minik8s-lab/rootfs","args":["exit","42"],"nonce":"run-a","resources":{"cpu":50,"memory":67108864,"pids":512},"wait":true}
+<p>第一小节通过 <code>container-run</code> 子命令运行任务。下面用后续资源关的完整形式展示参数；
+1.1–1.7 的调用没有 <code>--cpu</code>、<code>--memory</code>、<code>--pids</code>，但从 1.1 起都带 <code>--cgroup-parent</code>：</p>
+<pre><code class="language-bash">./bin/my-minik8s container-run --state-dir /tmp/course-run/work/driver --rootfs /tmp/minik8s-lab/rootfs --cgroup-parent /sys/fs/cgroup/minik8s-grader/run-1/stage-1 --nonce run-a --cpu 50 --memory 67108864 --pids 512 --wait true --arg=exit --arg=42
 </code></pre>
 <div class="table-wrap"><table>
 <thead>
 <tr>
-<th>字段</th>
+<th>参数</th>
 <th>含义</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>op</td>
-<td>container-run：请启动一次任务</td>
+<td>--state-dir</td>
+<td>本轮任务记录的存放路径。1.1 可以忽略该值</td>
 </tr>
 <tr>
-<td>rootfs</td>
-<td>实验 VM 上准备作为容器根目录的目录，内有 fixture 文件</td>
+<td>--cgroup-parent</td>
+<td>测试器在 guest 内预建的绝对 cgroup v2 父路径，已启用 cpu、memory、pids controller；同一 stage/run 共用，不同 stage 不同</td>
 </tr>
 <tr>
-<td>args</td>
-<td>传给 fixture 的参数，本例要求 exit 42</td>
+<td>--rootfs</td>
+<td>含 fixture 的容器根目录</td>
 </tr>
 <tr>
-<td>nonce</td>
-<td>本轮标记，后台任务把它放到环境变量 GRADER_NONCE 中</td>
+<td>--nonce</td>
+<td>本轮任务标记；后台任务环境中设置 GRADER_NONCE 为此值</td>
 </tr>
 <tr>
-<td>resources.cpu</td>
-<td>CPU 毫核，50 表示 0.05 核</td>
+<td>--cpu</td>
+<td>CPU 毫核；50 是 0.05 核</td>
 </tr>
 <tr>
-<td>resources.memory</td>
-<td>内存字节数，67108864 为 64 MiB</td>
+<td>--memory</td>
+<td>内存字节数；67108864 是 64 MiB</td>
 </tr>
 <tr>
-<td>resources.pids</td>
-<td>进程/线程数量上限</td>
+<td>--pids</td>
+<td>进程/线程数上限</td>
 </tr>
 <tr>
-<td>wait</td>
-<td>true 等待任务结束；false 在后台任务开始运行后返回</td>
+<td>--wait</td>
+<td>true 等待退出；false 在后台入口就绪后返回</td>
+</tr>
+<tr>
+<td>--arg</td>
+<td>每次指定一个入口参数，可重复，保留顺序；使用 --arg=VALUE 也能传递以横线开头的值</td>
 </tr>
 </tbody>
 </table></div>
-<p>/fixture 是测试程序在容器中的路径。物理文件位于 rootfs/fixture；把 rootfs 设为容器根目录后，
-容器内看到它位于 <code>/</code>。1.1 先验收启动和退出码，1.2 开始验收根目录与 PID 空间。</p>
-<p>wait=true 的响应例如 <code>{"ok":true,"exitCode":42}</code>。wait=false 的响应例如
-<code>{"ok":true,"id":"task-1","pid":2451}</code>，pid 是节点从外部看到的真实 PID，测试器用它读取 /proc。
-后台任务的 nonce 环境变量用于确认该 PID 属于这次调用。</p>
-<p>测试结束还会发送：</p>
-<pre><code class="language-json">{"op":"reset"}
-{"op":"close"}
-</code></pre>
-<p>reset 清理本轮任务并回复 ok=true；close 完成清理后正常结束程序。1.1–1.5 的任务页分别讲解
-退出码、根目录/PID、其他 namespace、cgroup 与安全设置各自怎样被检查。</p>
+<p>等待调用返回 <code>{"ok":true,"exitCode":42}</code>；后台调用返回 <code>{"ok":true,"id":"task-1","pid":2451}</code>。
+每次 <code>container-run</code> 调用都带 <code>--cgroup-parent</code>，包括等待、后台和启动失败路径；1.1 可以只解析或忽略这个值。
+pid 是 KVM 内、从容器外可见的真实任务 PID。任务参数指向课程提供的 <code>/fixture</code>；1.1 使用 rootfs/fixture 的实际路径。
+reset 的职责与重复执行规则已在上方列出。</p>
 <h2 id="stage-2">Stage 2</h2>
-<p>第二小节继续通过同一个 JSONL 程序调用运行时。sandbox 是一组应用容器共享的运行环境，
+<p>第二小节每个操作都是一次命令调用：<code>./bin/my-minik8s 操作名 --state-dir DIR</code>，表中的请求参数写成 <code>--参数 值</code>；args 用重复的 <code>--arg=值</code>。sandbox 是一组应用容器共享的运行环境，
 它和应用容器分别拥有 ID。CRI 是编排程序调用运行时的接口，采用 containerd 时可以通过其客户端实现。</p>
 <div class="table-wrap"><table>
 <thead>
@@ -145,25 +186,40 @@ message。例如旧版本冲突返回 <code>{"ok":false,"code":"conflict"}</code
 <td>image</td>
 <td>imageRef</td>
 </tr>
-<tr>
-<td>reset</td>
-<td>无</td>
-<td>清理本轮容器/sandbox 后 ok=true</td>
-</tr>
 </tbody>
 </table></div>
+<p>默认命令行接口下，测试器用 crictl 清理自己记录的容器和 sandbox。</p>
 <p>创建容器时先报告 CONTAINER_CREATED，启动后为 CONTAINER_RUNNING，结束后为 CONTAINER_EXITED。
 例如测试会使用前面返回的 ID 继续调用：</p>
-<pre><code class="language-json">{"op":"container-start","id":"container-1"}
-{"op":"container-status","id":"container-1"}
+<pre><code class="language-bash">./bin/my-minik8s container-start --state-dir /tmp/course-run/work/driver --id "$cid"
+./bin/my-minik8s container-status --state-dir /tmp/course-run/work/driver --id "$cid"
 </code></pre>
-<p>请求的 ID 来自真实创建结果，container-1 只是例子。基础镜像名称由 MINIK8S_GRADER_IMAGE 指定，
+<p><code>$cid</code> 取自 container-create 返回的 <code>id</code>。默认命令行模式的清理脚本接受 12–64 位十六进制运行时 ID。基础镜像名称由 MINIK8S_GRADER_IMAGE 指定，
 默认 minik8s.local/fixture:n01；基础镜像先导入实验运行时。</p>
 <p>拉取测试使用 localhost:5000/course/fixture 下的新 tag，先查缺失，再拉取，再运行读取
-/pull-proof 的任务。环境需提前运行 本地测试镜像仓库（<code>grader/fixtures/registry.py</code>），并让运行时
+/pull-proof 的任务。环境需提前运行本地测试镜像仓库（<code>grader/fixtures/registry.py</code>），并让运行时
 接受这个本地 HTTP 仓库。每次拉取用新 tag，已有镜像层缓存可以继续利用。</p>
 <h2 id="stage-3">Stage 3</h2>
-<p>第三小节通过同样的进程通道访问你的 KV。value 是 JSON 字符串，revision 是整数。</p>
+<p>第三小节需要同一个进程保存内存中的 KV、事件历史和订阅。测试器用参数启动你的程序：</p>
+<pre><code class="language-bash">./bin/my-minik8s kv --listen 127.0.0.1:动态端口 --state-dir /tmp/course-run/work/driver
+</code></pre>
+<p>你解析 <code>kv</code>、<code>--listen</code> 和 <code>--state-dir</code>，启动一个本机 HTTP 服务。测试器为每轮选择端口，
+后续把本页的操作 JSON 放在 <code>POST /call</code> 的请求体中；返回 HTTP 200 与一个 JSON 响应。
+可以用 Go 的 <code>net/http</code> 注册 <code>/call</code>，解码请求、调用自己的 KV 函数并编码响应。
+这是测试用的薄接口；本小节的实现重点是 KV 操作，Kubernetes 对象与 REST 路径在第四小节实现。</p>
+<pre><code class="language-bash"># 在一个终端启动；目录由你的程序创建。
+./bin/my-minik8s kv --listen 127.0.0.1:18882 --state-dir /tmp/my-kv
+# 在另一终端调用。
+curl -sS http://127.0.0.1:18882/call -H 'Content-Type: application/json' \
+  -d '{"op":"put","key":"basic","value":"one"}'
+</code></pre>
+<p>成功返回 <code>ok:true</code>；未找到、冲突和订阅过旧分别返回 <code>ok:false</code> 与 <code>code</code> 为
+<code>not_found</code>、<code>conflict</code>、<code>expired</code>。这些已处理的业务结果均用 HTTP 200。
+stdout/stderr 只用于日志，没有 stdin 对话。测试器对 <code>/</code> 发 GET 探测监听是否就绪，返回 404 即可。
+完成后测试器发送 SIGTERM，程序释放订阅并退出；允许正常退出 0 或由 SIGTERM 结束。
+3.1 可以使用内存 map；3.22 要在返回写入成功前持久化。3.22 会 SIGKILL 实际 KV 进程，
+再用同一目录启动新进程，检查值和版本恢复；不能依赖退出时才保存。</p>
+<p>value 是 JSON 字符串，revision 是整数。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -348,5 +404,14 @@ revision 来自删除提交。重启恢复测试会强杀进程，再把同一�
 <p>构建 fixture 的命令见 <a href="FIRST-SUBMISSION.html">第一次提交</a>。第二和第六小节还需准备 OCI 测试镜像
 和本地 registry；镜像制作工具为 grader/fixtures/make_image.py，仓库程序为 registry.py。
 第十小节使用的 HTTP /fetch 是 fixture 的探针路径，用于让 Pod 内程序发起请求。</p>
-<p>所有需要挂载、namespace、cgroup、运行时与网络规则的实验在已批准的隔离 KVM 内执行。
-本页的“节点文件系统”和 rootfs 实验路径均指该 VM 的文件系统。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<p><code>minik8s submit</code> 会为每个 stage 自动创建一次性 KVM，所有测试都在该 guest 内执行；正常流程不要求手工提供 VM。直接运行底层 <code>test.sh</code> 时，调用方需自行提供已经批准的 guest 身份。
+本页的“节点文件系统”和 rootfs 实验路径均指该 guest 的文件系统。</p>
+<h2 id="测试镜像与-registry">测试镜像与 registry</h2>
+<p>第 2、6、10 节使用的 guest 需具备运行时、crictl 和测试镜像。在制作基础镜像时可用下面的命令准备这些依赖。fixture 编译方式见 <a href="FIRST-SUBMISSION.html">首次提交</a>。</p>
+<pre><code class="language-bash">python3 grader/fixtures/make_image.py lab/rootfs/fixture lab/fixture.tar minik8s.local/fixture:n01
+ctr -n k8s.io images import lab/fixture.tar
+python3 grader/fixtures/make_image.py lab/rootfs/fixture lab/pull.tar localhost:5000/course/fixture:seed pull-proof
+python3 grader/fixtures/registry.py --port 5000 --image lab/pull.tar --log lab/registry.log --stop-file lab/registry-off
+</code></pre>
+<p>镜像拉取关使用这个本地 registry。将实验运行时配置为接受 localhost:5000 的 HTTP registry。
+CRI 小节的默认参数调用由测试设施用 crictl 清理本轮返回的实际容器与 sandbox ID；删除子命令在对应关卡单独验收。旧 JSONL 适配器由 close 请求触发自身清理，测试器随后确认进程退出。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 7.9：按最大 init 内存计算 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-79按最大-init-内存计算">Stage 7.9：按最大 init 内存计算</h1>
+<p>计算内存请求时，同一 Pod 的 init 容器按顺序运行。测试器准备两个各需 600 字节的 init 容器和一个 1000 字节的节点；scheduler 应能将这个 Pod 绑定过去。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>只有一个内存容量为 1000 的节点。两个 init 容器各需 600、应用需 100；Pod 应能绑定到该节点。</p>
+<pre><code class="language-text">一个节点：可用内存 1000 字节
+测试 Pod：一个应用请求 100 字节，两个 init 各请求 600 字节
+max(100, 600, 600) = 600 → Pod 绑定到该节点
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>CPU 与 memory 分别取 max；不要使用同一个 init 容器组合掩盖另一维度。</p>
+<p><a href="../stages/07-scheduler.html">第 7 节接入说明</a> · 沿用 <a href="7.8.html">7.8 按最大 init CPU 计算</a> · 检查 <code>SCHED-INIT-MEMORY</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

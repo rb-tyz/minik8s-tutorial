@@ -1,5 +1,5 @@
 {
-  "pages": 136,
+  "pages": 236,
   "local_artifacts": [
     "audit/evidence/logs/delivery",
     "audit/evidence/research/SOURCES.txt",
@@ -8,6 +8,7 @@
     "audit/render_records.py",
     "dist/minik8s-grader.tar.gz",
     "dist/minik8s-grader.tar.gz.sha256",
+    "docs/progress/COURSE-V3-20261117.md",
     "docs/progress/evidence/alignment-20261107/checks/test-summary.json",
     "docs/progress/evidence/alignment-20261107/pull-vm/cluster/registry.jsonl",
     "docs/progress/evidence/alignment-20261107/pull-vm/cluster/runtime-security.txt",

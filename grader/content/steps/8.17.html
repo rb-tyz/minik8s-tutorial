@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 8.17：数字 targetPort · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-817数字-targetport">Stage 8.17：数字 targetPort</h1>
+<p>Service 使用数字 targetPort 时，让 Endpoints 控制器发布匹配 Pod 的 IP 和这个端口号。测试器负责创建 Pod 并写入其就绪状态。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>地址与数字端口都正确。</p>
+<pre><code class="language-text">Pod 已就绪，podIP=10.77.0.7；Service port=80，targetPort=8087
+同一个 Endpoints subset 的 addresses 里有 10.77.0.7，ports 里有 8087
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>数字 targetPort 不做名称解析，直接映射。</p>
+<p><a href="../stages/08-controllers.html">第 8 节接入说明</a> · 沿用 <a href="8.16.html">8.16 无匹配 Pod 的空 Endpoints</a> · 检查 <code>EPS-NUMERIC</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

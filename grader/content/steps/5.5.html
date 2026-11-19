@@ -1,29 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 5.5：拒绝非法游标 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-55拒绝非法游标">Stage 5.5：拒绝非法游标</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在开始长连接响应之前校验 resourceVersion。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本阶段继续运行 API 服务。测试器用 HTTP 建立 Watch 长连接，再从另一个连接创建或删除对象。
-Watch 表示持续订阅对象变化；返回格式是 NDJSON，即每行一个 JSON 事件。</p>
-<p>本页 URL 使用 <code>demo</code> 作为 namespace 示例。一个事件中的 <code>type</code> 表示变化类型，<code>object</code> 是对应
-对象。<code>resourceVersion</code> 是对象或快照的存储版本，用于说明从哪里接收后续变化。
-API 的启动和停止仍使用 <code>--adapter</code> 指定的脚本目录。</p>
-<h2 id="在发出流头之前校验">在发出流头之前校验</h2>
-<p>测试器请求一个非法版本：</p>
-<pre><code class="language-http">GET /api/v1/namespaces/demo/pods?watch=true&amp;resourceVersion=bad
-</code></pre>
-<p>预期是 HTTP 422。调用方据此知道请求参数有问题，能够修正后重新发起。
-resourceVersion 的正常格式是十进制非负整数字符串；正版本用于续接该位置之后的事件。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>先解析查询参数并验证，再写 HTTP 200 和事件流。历史位置已过期的处理沿用 KV 的窗口规则，
-完整 HTTP 约定见公开 API 文档。</p>
-<p><a href="../stages/05-watch.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 5.5：从 List 版本接续 Watch · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-55从-list-版本接续-watch">Stage 5.5：从 List 版本接续 Watch</h1>
+<p>支持从 List 返回的 resourceVersion 打开 Watch。测试器在 List 与建立连接之间创建的 Pod，也要出现在这条连接上。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>WATCH-INVALID</code>：resourceVersion=bad 立即返回 422。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>连接收到已存在快照之外的新对象 ADDED。</p>
+<pre><code class="language-text">GET /api/v1/namespaces/NS/pods → 记下列表返回的 resourceVersion，记为 R
+POST /api/v1/namespaces/NS/pods → 新建 replay，记录其 UID
+GET /api/v1/namespaces/NS/pods?watch=true&amp;resourceVersion=R → ADDED 包含该 UID
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 5.5
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>Exact(N) 重放 N 之后的历史事件；不要重复发送 N 前对象。</p>
+<p><a href="../stages/05-watch.html">第 5 节接入说明</a> · 沿用 <a href="5.3.html">5.3 快照后发送 bookmark</a> · 检查 <code>WATCH-REPLAY</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

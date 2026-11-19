@@ -1,37 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 4.8：把 Pod 绑定到 Node · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-48把-pod-绑定到-node">Stage 4.8：把 Pod 绑定到 Node</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>支持绑定子资源，检查目标 Node 和 Pod 当前版本。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>从本小节开始，测试器通过 HTTP 请求访问你写的 API 服务。API 服务是一个监听端口的程序，
-负责把请求转换为上一小节的 KV 操作。测试器通过启动脚本运行它，例如：</p>
-<pre><code class="language-text">./test-hooks/start apiserver /tmp/course-run/work/lifecycle
-</code></pre>
-<p><code>start</code> 是你提供的脚本文件，<code>apiserver</code> 是第一个参数，表示启动 API；第二个参数是本轮数据与
-日志目录。<code>--adapter ./test-hooks</code> 告诉测试器去哪里找这些脚本。具体约定见
-<a href="../../docs/ADAPTER.html#%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F">启动、停止和重启</a>。</p>
-<p>本页用 <code>demo</code> 表示测试 namespace。namespace 是对象名称的分组，同名 Pod 可以出现在不同分组。
-实际测试会随机生成这个分组名，API 根据收到的 URL 处理。</p>
-<h2 id="绑定操作写入哪个字段">绑定操作写入哪个字段</h2>
-<p>Node 对象表示一个节点；Pod.spec.nodeName 记录 Pod 被分给哪个节点。Binding 是提交分配结果
-的消息。本阶段测试器先创建两个 Node 和一个未绑定 Pod，然后发送：</p>
-<pre><code class="language-http">POST /api/v1/namespaces/demo/pods/binding/binding
-</code></pre>
-<pre><code class="language-json">{"apiVersion":"v1","kind":"Binding","metadata":{"name":"binding","namespace":"demo","uid":"pod-a","resourceVersion":"7"},"target":{"kind":"Node","name":"node-a"}}
-</code></pre>
-<p>最后一段 /binding 是子资源，前面的 binding 是本例 Pod 名。target.name 是要绑定的节点。
-测试依次检查：不存在的节点返回 404；有效绑定返回 200；旧版本重发返回 409；携带当前版本
-重复绑定同一节点返回 200 且版本不变；改绑另一节点返回 409。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>确认 Node 和 Pod 存在，再检查版本与已有 nodeName。未绑定时通过 CAS 写入 nodeName；
-已经指向同一目标时返回当前对象，指向其他目标时返回冲突。</p>
-<p><a href="../stages/04-api.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 4.8：拒绝旧版本替换 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-48拒绝旧版本替换">Stage 4.8：拒绝旧版本替换</h1>
+<p>拒绝携带过期 resourceVersion 的 PUT。测试器成功替换一次后重发旧对象，再读取已经保存的标签。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>API-BINDING</code>：不存在的节点被拒绝，旧版本冲突，换节点被拒绝。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>旧版本 409；GET 返回上次成功值。</p>
+<pre><code class="language-text">PUT /api/v1/namespaces/NS/pods/stale → 200（当前版本，labels.step 改为 "one"）
+PUT /api/v1/namespaces/NS/pods/stale → 409（重发旧对象）
+GET /api/v1/namespaces/NS/pods/stale → labels.step 仍为 "one"
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 4.8
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>把版本比较与写入放进同一提交过程，冲突前不修改对象。</p>
+<p><a href="../stages/04-api.html">第 4 节接入说明</a> · 沿用 <a href="4.7.html">4.7 按当前版本替换对象</a> · 检查 <code>API-REPLACE-STALE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

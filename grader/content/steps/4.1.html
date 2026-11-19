@@ -1,42 +1,12 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 4.1：创建并查询 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-41创建并查询-pod">Stage 4.1：创建并查询 Pod</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>通过 POST 创建 Pod，再按名称 GET 它。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>从本小节开始，测试器通过 HTTP 请求访问你写的 API 服务。API 服务是一个监听端口的程序，
-负责把请求转换为上一小节的 KV 操作。测试器通过启动脚本运行它，例如：</p>
-<pre><code class="language-text">./test-hooks/start apiserver /tmp/course-run/work/lifecycle
-</code></pre>
-<p><code>start</code> 是你提供的脚本文件，<code>apiserver</code> 是第一个参数，表示启动 API；第二个参数是本轮数据与
-日志目录。<code>--adapter ./test-hooks</code> 告诉测试器去哪里找这些脚本。具体约定见
-<a href="../../docs/ADAPTER.html#%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F">启动、停止和重启</a>。</p>
-<p>本页用 <code>demo</code> 表示测试 namespace。namespace 是对象名称的分组，同名 Pod 可以出现在不同分组。
-实际测试会随机生成这个分组名，API 根据收到的 URL 处理。</p>
-<h2 id="从一条-http-请求开始">从一条 HTTP 请求开始</h2>
-<p>Pod 是一份容器运行描述。metadata 保存名称和身份，spec 保存想运行的程序。本阶段先把它
-作为 API 中的一条记录，实际容器运行在第六小节完成。</p>
-<p>测试器向集合路径发送 POST。例如：</p>
-<pre><code class="language-http">POST /api/v1/namespaces/demo/pods
-Content-Type: application/json
-</code></pre>
-<pre><code class="language-json">{"metadata":{"name":"create"},"spec":{"nodeName":"","containers":[{"name":"app","image":"minik8s.local/fixture:n01","command":["/fixture"],"args":["pause"],"resources":{"cpu":50,"memory":67108864}}]}}
-</code></pre>
-<p>image 是镜像名称，command/args 描述容器以后要执行的程序。API 创建成功时返回 HTTP 201，
-响应中有完整对象，并新增 metadata.uid 与 metadata.resourceVersion。UID 区分对象的生命周期，
-resourceVersion 是它当前的存储版本，使用数字字符串。</p>
-<p>接着 GET <code>/api/v1/namespaces/demo/pods/create</code>，应返回 HTTP 200、相同 UID、相同版本和原 spec。
-本项只测试这两个操作；测试器最后调用 stop 结束本轮独立 API 进程。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>先解析集合路径与对象路径，把对象编码后写入 KV。读取时填回存储版本，并返回 JSON。
-通过启动脚本管理这次 API 进程；本阶段的启动探测接受根路径的 404 响应，尚未实现其他
-资源的 List 也能开始练习。</p>
-<p><a href="../stages/04-api.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 4.1：创建并读取 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-41创建并读取-pod">Stage 4.1：创建并读取 Pod</h1>
+<p>让你的 apiserver 接受创建 Pod 的 HTTP 请求，分配 UID 和 resourceVersion，再允许测试器按名字读回它。从这一节起，测试器通过你提供的 test-hooks/start、stop、restart 脚本管理服务。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>API-CREATE</code>：POST 返回 201，GET 返回同一 UID 和版本。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>POST 返回 201 与身份；GET 返回同一 UID/RV 和 spec。</p>
+<pre><code class="language-text">POST /api/v1/namespaces/NS/pods
+{"metadata":{"name":"demo"},"spec":{"containers":[{"name":"app","image":"minik8s.local/fixture:n01","command":["/fixture"],"args":["pause"]}]}}
+→ HTTP 201，记下 metadata.uid 和 metadata.resourceVersion
+GET /api/v1/namespaces/NS/pods/demo → HTTP 200，返回同一个 Pod
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 4.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>解析集合与对象路径，写 KV，读回时投影 resourceVersion。UID 由服务端生成。</p>
+<p><a href="../stages/04-api.html">第 4 节接入说明</a> · 沿用 <a href="3.1.html">3.1 写入并读取一个键</a> · 检查 <code>API-CREATE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

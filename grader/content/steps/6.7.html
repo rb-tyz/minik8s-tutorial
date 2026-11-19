@@ -1,30 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.7：执行只读卷约束 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-67执行只读卷约束">Stage 6.7：执行只读卷约束</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>把 readOnly 挂载配置传到实际容器。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本阶段实现 kubelet，也就是在一个节点上负责运行 Pod 的组件。Pod 是对“运行哪些容器”的描述：
-<code>spec</code> 保存期望配置，<code>status</code> 保存观察结果。kubelet 读取分配给本节点的 Pod，调用前两节的
-运行时接口，再把结果写回 API。</p>
-<p>测试器调用 <code>./test-hooks/start node /tmp/course-run/work/lifecycle</code>，由你的脚本启动 API 和
-kubelet。随后它创建已经填写 <code>spec.nodeName</code> 的 Pod，并等待结果。这里使用节点网络，Pod 网络
-在第九小节实现。本节在实验 KVM 内运行，测试程序和镜像由实验环境准备。</p>
-<h2 id="readonly-是挂载属性">readOnly 是挂载属性</h2>
-<p>测试器继续使用 hostPath 卷，但把应用的挂载改为：</p>
-<pre><code class="language-json">{"name":"data","mountPath":"/work","readOnly":true}
-</code></pre>
-<p>应用执行 <code>["write","/work/forbidden","x"]</code>。fixture 写入失败会退出 2。测试要求 Pod 为
-Failed、退出码为 2，并检查节点侧共享目录没有出现 forbidden 文件。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>将 readOnly 传到运行时的实际挂载配置，让文件系统拒绝写入。保留原有路径映射和终态上报。
-检查时可先确认容器与节点看到的是同一目录，再核对挂载是否只读。</p>
-<p><a href="../stages/06-kubelet.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.7：映射实际状态与容器 ID · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-67映射实际状态与容器-id">Stage 6.7：映射实际状态与容器 ID</h1>
+<p>让 kubelet 把 Pod IP 和运行时容器 ID 写入 Pod.status，并报告运行状态。测试器从 API 响应取容器 ID，到 CRI 查询同一个容器。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>NODE-READONLY</code>：写入任务失败，源目录中没有被禁止的文件。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>Pod 为 Running，报告 podIP，并有一个容器状态；返回的容器 ID 可被 CRI 查询为 CONTAINER_RUNNING。</p>
+<pre><code class="language-text">GET pod -&gt; Running/podIP/containerID
+CRI inspect containerID -&gt; RUNNING
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 6.7
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>状态映射集中在一处；不要把创建请求里的镜像/参数当作实际状态。</p>
+<p><a href="../stages/06-kubelet.html">第 6 节接入说明</a> · 沿用 <a href="6.5.html">6.5 运行一个已绑定 Pod</a> · 检查 <code>NODE-STATUS-MAP</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

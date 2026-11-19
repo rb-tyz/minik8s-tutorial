@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 2.12：查询不存在的镜像 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-212查询不存在的镜像">Stage 2.12：查询不存在的镜像</h1>
+<p>用 <code>image-status</code> 查询运行时未缓存的镜像。测试器传入本轮独有的 tag，你的查询命令正常退出，在 JSON 中返回 <code>ok:false</code>。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>ok=false；不得把缺失镜像报告为可用。</p>
+<pre><code class="language-text">./bin/my-minik8s image-status --state-dir work --image localhost:5000/course/fixture:missing-run-a
+# 镜像不存在，查询命令退出 0，stdout 中 ok 为 false
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>查询结果来自运行时/镜像存储，不能默认返回成功。</p>
+<p><a href="../stages/02-cri.html">第 2 节接入说明</a> · 沿用 <a href="2.1.html">2.1 创建 sandbox 并查询就绪</a> · 检查 <code>CRI-IMAGE-MISSING</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

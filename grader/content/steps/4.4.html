@@ -1,34 +1,12 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 4.4：删除与同名重建 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-44删除与同名重建">Stage 4.4：删除与同名重建</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>实现按名称删除，并正确处理同名对象重建。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>从本小节开始，测试器通过 HTTP 请求访问你写的 API 服务。API 服务是一个监听端口的程序，
-负责把请求转换为上一小节的 KV 操作。测试器通过启动脚本运行它，例如：</p>
-<pre><code class="language-text">./test-hooks/start apiserver /tmp/course-run/work/lifecycle
-</code></pre>
-<p><code>start</code> 是你提供的脚本文件，<code>apiserver</code> 是第一个参数，表示启动 API；第二个参数是本轮数据与
-日志目录。<code>--adapter ./test-hooks</code> 告诉测试器去哪里找这些脚本。具体约定见
-<a href="../../docs/ADAPTER.html#%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F">启动、停止和重启</a>。</p>
-<p>本页用 <code>demo</code> 表示测试 namespace。namespace 是对象名称的分组，同名 Pod 可以出现在不同分组。
-实际测试会随机生成这个分组名，API 根据收到的 URL 处理。</p>
-<h2 id="名称可以重用身份会更新">名称可以重用，身份会更新</h2>
-<p>测试器创建名为 delete 的 Pod，记下 UID，然后发送：</p>
-<pre><code class="language-http">DELETE /api/v1/namespaces/demo/pods/delete
-GET /api/v1/namespaces/demo/pods/delete
-</code></pre>
-<p>DELETE 应返回 200，后面的 GET 返回 404。再按同一名称创建对象时，返回的 UID 应与之前不同。
-Pod 名称用于 URL 定位；UID 用来区分“原来的 Pod”和“后来重新创建的 Pod”。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>将对象路径转换成对应存储键，提交删除后让后续读取看到不存在。创建操作每次为新生命周期
-生成 UID，保留 KV 的提交顺序。更完整的删除版本条件见 API 契约。</p>
-<p><a href="../stages/04-api.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 4.4：隔离两个 namespace · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-44隔离两个-namespace">Stage 4.4：隔离两个 namespace</h1>
+<p>允许两个 namespace 分别创建同名 Pod。测试器分别按名字 GET 这两个 Pod，检查各自的 namespace 和 UID。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>API-DELETE</code>：删除后 GET 为 404；同名重建获得新的 UID。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>两个 GET 都返回 200，各返回自己 namespace 的对象，且两个 UID 不同。</p>
+<pre><code class="language-text">POST /api/v1/namespaces/NS/pods → 创建名为 shared 的 Pod，记录 UID A
+POST /api/v1/namespaces/NS-other/pods → 也创建 shared，记录 UID B
+GET /api/v1/namespaces/NS/pods/shared → UID A
+GET /api/v1/namespaces/NS-other/pods/shared → UID B
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 4.4
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>存储键包含 namespace；同一路径形状在不同分组下互不可见。</p>
+<p><a href="../stages/04-api.html">第 4 节接入说明</a> · 沿用 <a href="4.1.html">4.1 创建并读取 Pod</a> · 检查 <code>API-NAMESPACE</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

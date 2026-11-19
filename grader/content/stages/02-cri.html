@@ -1,42 +1,89 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 2：给容器运行时提供统一接口 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-2给容器运行时提供统一接口">小节 2：给容器运行时提供统一接口</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在本小节，你要把启动容器的能力接到一组统一的运行时操作上：创建 sandbox、创建与启动
-容器、查询状态、拉取镜像，以及删除资源。后面的 kubelet 会通过这组操作管理 Pod。
-对应教程第 7 节。</p>
-<h2 id="sandbox-和应用容器">sandbox 和应用容器</h2>
-<p>一个 Pod 可以包含多个容器。运行时先创建 sandbox，为这些容器准备共同使用的运行环境；
-再在该环境中创建应用容器。你需要区分“已经创建”和“已经运行”这两个状态。</p>
-<p>下面是一个任务的预期操作顺序：</p>
-<pre><code class="language-text">创建 sandbox
-  → 创建容器：Created
-  → 启动容器：Running
-  → 程序结束：Exited，退出码 42
-  → 删除容器与 sandbox
-</code></pre>
-<p>查询已经结束的任务时，仍应返回它的退出状态。这样 kubelet 才能判断 Pod 是否成功、
-是否失败，以及是否需要重新启动。</p>
-<h2 id="镜像从哪里来">镜像从哪里来？</h2>
-<p>基础测试镜像会提前放入实验环境。拉取测试则使用本地 registry 中一个本轮尚未缓存的引用，
-要求你的实现取得镜像并运行其中的任务。该镜像含有独有文件 <code>/pull-proof</code>，测试程序会读取它。</p>
-<p>把“能查到镜像”和“能使用镜像创建容器”分别检查，有助于找出镜像引用、解包或创建参数的问题。
-每轮拉取使用不同 tag，便于你在同一实验 VM 中反复提交。</p>
-<h2 id="测试如何运行">测试如何运行</h2>
-<p>测试器通过 JSONL driver 调用你的公开运行时操作。driver 可以包装已有的 CRI 客户端；
-请求与返回字段见 <a href="../../docs/ADAPTER.html#stage-2">Stage 2 适配协议</a>。</p>
-<ul>
-<li><code>CRI-LIFECYCLE</code>：创建、启动、查询、列举和删除 sandbox/container。</li>
-<li><code>CRI-EXIT</code>：任务结束后仍能查询 Exited 和退出码 42。</li>
-<li><code>CRI-PULL</code>：从缺失镜像开始，完成拉取并运行读取独有文件的任务。</li>
-</ul>
-<h2 id="提示">提示</h2>
-<p>先为 sandbox 和 container 分别保存身份，再实现状态转换。创建容器时沿用所属 sandbox 的
-配置；删除时按容器、sandbox 的顺序回收。运行时返回错误时，把错误传回调用方，留出重试机会。
-本小节在准备好的可销毁 KVM 内运行，可以复用 containerd 等成熟运行时。</p>
-<h2 id="按-stage-提交">按 stage 提交</h2>
-<p>本小节分为 6 个 stage。先查看第一项任务：</p>
-<pre><code class="language-bash">minik8s stage 2.1
-</code></pre>
-<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
-临时练习时指定完整编号，例如：</p>
-<pre><code class="language-bash">minik8s submit --stage 2.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>2. CRI：sandbox 与容器生命周期 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="2-crisandbox-与容器生命周期">2. CRI：sandbox 与容器生命周期</h1>
+<p>用同一套公开操作验收 sandbox、创建、启动、列举、退出、镜像与删除。不要求第一关就实现完整的后续清理，删除能力在相应 stage 出现。</p>
+<h2 id="本节接入">本节接入</h2>
+<p>本节沿用 <code>./bin/my-minik8s</code>。测试器把操作名和参数传给它；你的程序调用 KVM 内的 CRI 容器运行时（如 containerd），再把结果写成 JSON。Pod sandbox 是一组容器共享的运行环境，sandbox ID 与其中每个应用容器的 ID 各自独立。</p>
+<p>每次操作启动一个新进程，并传同一轮的 <code>--state-dir</code>。示例中的 <code>$sid</code> 是前一次 sandbox-run 返回的 <code>id</code>，<code>$cid</code> 是 container-create 返回的 <code>id</code>。命令成功处理业务错误时，命令退出 0、JSON 中 <code>ok</code> 为 false；容器自己的退出码在终态响应的 <code>exitCode</code> 中。</p>
+<p>默认命令行接口下，返回运行时给出的 sandbox 或容器 ID。测试器用 crictl 按这些 ID 清理资源，清理脚本接受 12–64 位十六进制字符。<code>container-create</code> 省略 <code>--image</code> 时，使用 <code>MINIK8S_GRADER_IMAGE</code> 指定的基础镜像，默认是 <code>minik8s.local/fixture:n01</code>。各关只需提供当时用到的操作。此节的 guest 需要可用的 CRI 服务、crictl 和测试镜像，2.13 还要能访问本地测试仓库。<a href="../../docs/ADAPTER.html#%E6%B5%8B%E8%AF%95%E9%95%9C%E5%83%8F%E4%B8%8E-registry">镜像与运行时准备</a></p>
+<h2 id="关卡">关卡</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>新增行为</th>
+<th>检查 ID</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2.1</td>
+<td><a href="../steps/2.1.html">创建 sandbox 并查询就绪</a></td>
+<td><code>CRI-SANDBOX</code></td>
+</tr>
+<tr>
+<td>2.2</td>
+<td><a href="../steps/2.2.html">删除 sandbox</a></td>
+<td><code>CRI-SANDBOX-REMOVE</code></td>
+</tr>
+<tr>
+<td>2.3</td>
+<td><a href="../steps/2.3.html">创建但不启动容器</a></td>
+<td><code>CRI-CREATE</code></td>
+</tr>
+<tr>
+<td>2.4</td>
+<td><a href="../steps/2.4.html">同一 sandbox 内创建两个容器</a></td>
+<td><code>CRI-CREATE-MULTI</code></td>
+</tr>
+<tr>
+<td>2.5</td>
+<td><a href="../steps/2.5.html">启动已创建容器</a></td>
+<td><code>CRI-START</code></td>
+</tr>
+<tr>
+<td>2.6</td>
+<td><a href="../steps/2.6.html">启动一个，另一个保持 Created</a></td>
+<td><code>CRI-START-ISOLATED</code></td>
+</tr>
+<tr>
+<td>2.7</td>
+<td><a href="../steps/2.7.html">列举一个容器</a></td>
+<td><code>CRI-LIST-ONE</code></td>
+</tr>
+<tr>
+<td>2.8</td>
+<td><a href="../steps/2.8.html">列举多个容器</a></td>
+<td><code>CRI-LIST-MULTI</code></td>
+</tr>
+<tr>
+<td>2.9</td>
+<td><a href="../steps/2.9.html">按 sandbox 过滤</a></td>
+<td><code>CRI-LIST-FILTER</code></td>
+</tr>
+<tr>
+<td>2.10</td>
+<td><a href="../steps/2.10.html">退出后保留退出码</a></td>
+<td><code>CRI-EXIT-42</code></td>
+</tr>
+<tr>
+<td>2.11</td>
+<td><a href="../steps/2.11.html">保留成功退出码</a></td>
+<td><code>CRI-EXIT-0</code></td>
+</tr>
+<tr>
+<td>2.12</td>
+<td><a href="../steps/2.12.html">查询不存在的镜像</a></td>
+<td><code>CRI-IMAGE-MISSING</code></td>
+</tr>
+<tr>
+<td>2.13</td>
+<td><a href="../steps/2.13.html">拉取并运行缺失镜像</a></td>
+<td><code>CRI-IMAGE-PULL</code></td>
+</tr>
+<tr>
+<td>2.14</td>
+<td><a href="../steps/2.14.html">删除容器与 sandbox</a></td>
+<td><code>CRI-DELETE</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>教程：<a href="https://rb-tyz.github.io/minik8s-tutorial/?lang=both#7-phase-2--a-cri-like-local-grpc">§7 类 CRI 的本地 gRPC</a> · <a href="../../docs/ADAPTER.html">接入说明</a> · <a href="../../docs/COURSE-CLI.html">提交、回归与排错</a></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

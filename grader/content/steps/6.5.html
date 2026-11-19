@@ -1,31 +1,12 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.5：向容器传入环境变量 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-65向容器传入环境变量">Stage 6.5：向容器传入环境变量</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>将 spec 中的 env 传入应用容器。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本阶段实现 kubelet，也就是在一个节点上负责运行 Pod 的组件。Pod 是对“运行哪些容器”的描述：
-<code>spec</code> 保存期望配置，<code>status</code> 保存观察结果。kubelet 读取分配给本节点的 Pod，调用前两节的
-运行时接口，再把结果写回 API。</p>
-<p>测试器调用 <code>./test-hooks/start node /tmp/course-run/work/lifecycle</code>，由你的脚本启动 API 和
-kubelet。随后它创建已经填写 <code>spec.nodeName</code> 的 Pod，并等待结果。这里使用节点网络，Pod 网络
-在第九小节实现。本节在实验 KVM 内运行，测试程序和镜像由实验环境准备。</p>
-<h2 id="env-要进入实际进程环境">env 要进入实际进程环境</h2>
-<p>测试器创建一个 Never 策略的 Pod，设置：</p>
-<pre><code class="language-json">{"env":[{"name":"CHECK","value":"correct"}],"args":["env","CHECK","correct"]}
-</code></pre>
-<p>这两个字段位于应用容器配置中。env 是要注入的环境变量列表；参数要求 fixture 在进程里
-读取 CHECK，等于 correct 时退出 0，否则退出 3。</p>
-<p>测试等待 Pod 为 Succeeded、退出码为 0。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>在创建应用容器时，把 name/value 列表转成运行时接受的环境配置。把命令、参数与环境一起
-传给实际任务，随后按运行时终态更新 Pod。</p>
-<p><a href="../stages/06-kubelet.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.5：运行一个已绑定 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-65运行一个已绑定-pod">Stage 6.5：运行一个已绑定 Pod</h1>
+<p>测试器提交一个已绑定到本节点的 Pod。让 kubelet 通过 CRI 启动应用容器，并把真实容器 ID 写回 Pod 状态，供测试器独立查询。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>NODE-ENV</code>：容器内读到 CHECK=correct，检查任务成功退出。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>Pod Running；独立 CRI inspect 显示同一 container ID 为 RUNNING。</p>
+<pre><code class="language-text">从 GET /api/v1/nodes 选出首个 Ready 节点，记下 metadata.name
+创建 Pod run，将 spec.nodeName 设为该节点名
+GET Pod → Running，从 containerStatuses[0] 取出 containerID
+crictl inspect 该 ID → CONTAINER_RUNNING
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 6.5
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>保存 Pod UID、sandbox ID、容器 ID 的关联；创建后查询实际运行时状态。</p>
+<p><a href="../stages/06-kubelet.html">第 6 节接入说明</a> · 沿用 <a href="6.1.html">6.1 登记 Node 并上报 Ready</a> · 检查 <code>NODE-RUN</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

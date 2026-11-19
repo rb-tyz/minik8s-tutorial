@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 6.21：独立运行并删除两个 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-621独立运行并删除两个-pod">Stage 6.21：独立运行并删除两个 Pod</h1>
+<p>分别维护本机的两个 Pod。测试器删除第一个，检查它的容器已清理，并核对第二个 Pod 仍在运行。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>两个 Pod 独立；删除 a 后 b 及其容器保持运行。</p>
+<pre><code class="language-text">创建 pod-a、pod-b，等两者 Running，记下 pod-b 的容器 ID
+删除 pod-a → crictl inspect 原 pod-b 容器仍为 CONTAINER_RUNNING
+再次读取 pod-b → Running
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>按 Pod UID/名称分别维护资源；删除不要按 nodeName 清空全部。</p>
+<p><a href="../stages/06-kubelet.html">第 6 节接入说明</a> · 沿用 <a href="6.5.html">6.5 运行一个已绑定 Pod</a> · 检查 <code>NODE-MULTI-POD</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

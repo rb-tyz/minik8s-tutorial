@@ -1,31 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 7.2：计算已绑定请求的占用 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-72计算已绑定请求的占用">Stage 7.2：计算已绑定请求的占用</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>把已绑定 Pod 计入占用，容量不足时保留等待。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节实现 scheduler（调度器）：给尚未填写 <code>spec.nodeName</code> 的 Pod 选择节点，并通过 API 的
-绑定操作写入选择结果。测试器调用 <code>start scheduler 数据目录</code>，由启动脚本运行 API 与调度器。</p>
-<p>测试器通过 HTTP 提供 Node 与 Pod 对象，再观察 Pod 的绑定结果。本节可在普通用户环境运行；
-节点状态由测试输入提供，容器的实际运行由后续集成测试验证。CPU 数字使用毫核，1000 表示一个核；
-内存数字使用字节。</p>
-<h2 id="已绑定也会占用容量">已绑定也会占用容量</h2>
-<p>测试只提供一个可分配 1000 毫核的节点。先创建一个请求 800 毫核的 Pod并等它绑定，再创建
-另一个 800 毫核任务和一个 50 毫核任务。</p>
-<pre><code class="language-text">总量 1000 - 已绑定请求 800 = 剩余 200
-等待任务 800：放不下
-小任务 50：可以绑定
-</code></pre>
-<p>测试要求小任务先得到节点，大任务保持未绑定。删除原先的 800 毫核 Pod 后，等待任务应能绑定。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>从已绑定 Pod 计算节点占用，包括已经绑定但尚未运行的对象。每轮根据当前对象更新这份账。
-可以先用单个调度循环与每轮 List 实现，保证一次绑定后下一次选择能看到已占用请求。</p>
-<p><a href="../stages/07-scheduler.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 7.2：排除零容量节点 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-72排除零容量节点">Stage 7.2：排除零容量节点</h1>
+<p>让 scheduler 排除可分配 CPU 为零的节点。测试器创建两个 Ready 节点，其中只有一个能容纳待调度 Pod。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>SCHED-CAPACITY</code>：800m 占用后第二个 800m 等待，50m 请求可调度；删除后等待任务绑定。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>零容量节点被排除。</p>
+<pre><code class="language-text">Node zero cpu=0 Ready=True；Node good cpu=2000
+Pod cpu=500 -&gt; 绑定 good
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 7.2
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>容量为 0 不是“无限”或“未设置”；显式跳过。</p>
+<p><a href="../stages/07-scheduler.html">第 7 节接入说明</a> · 沿用 <a href="7.1.html">7.1 排除未就绪节点</a> · 检查 <code>SCHED-FILTER-ZERO</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

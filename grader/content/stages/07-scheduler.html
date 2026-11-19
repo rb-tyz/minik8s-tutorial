@@ -1,42 +1,68 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 7：为 Pod 选择节点 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-7为-pod-选择节点">小节 7：为 Pod 选择节点</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在本小节，你要实现调度器。它寻找尚未绑定的 Pod，筛选可用节点，比较资源使用情况，
-最后通过 API 将 Pod 绑定到一个节点。kubelet 随后负责运行它。对应教程第 12 节。</p>
-<h2 id="先判断能否放下">先判断能否放下</h2>
-<p>假设一个节点可分配 1000 毫核 CPU，已经绑定的 Pod 使用了 800 毫核：</p>
-<pre><code class="language-text">节点可分配：1000m
-已绑定占用： 800m
-剩余：       200m
-
-新 Pod 请求 800m → 暂时等待
-新 Pod 请求  50m → 可以绑定
-</code></pre>
-<p>资源使用量要包括已经绑定但还在启动的 Pod，避免连续调度时超额分配。原 Pod 删除后，
-下一轮计算应释放对应占用，让等待中的 Pod 获得机会。</p>
-<p>节点还要处于 Ready 状态，并具有可用容量。先过滤，再对剩下的候选节点评分。</p>
-<h2 id="init-容器会影响资源需求">init 容器会影响资源需求</h2>
-<p>init 容器依次执行，应用容器随后运行。因此需要分别计算应用容器请求之和与最大的 init
-请求，再取较大值。例如应用只请求 50m，init 请求 1500m，整个 Pod 仍需要能容纳 1500m 的节点。
-CPU 与内存都按对应维度计算。</p>
-<p>评分使用资源占用比例。一个 10000m 节点已经用了 5000m，另一个 1000m 节点尚未使用；
-在本课程的评分规则下，能够容纳新任务的空闲节点应当优先。</p>
-<h2 id="测试如何运行">测试如何运行</h2>
-<p>测试器提供 Node 的状态和容量，通过 API 创建 Pod，观察绑定结果：</p>
-<ul>
-<li><code>SCHED-FILTER</code>：排除不健康和零容量节点。</li>
-<li><code>SCHED-CAPACITY</code>：已绑定请求占用容量，删除后释放，小任务仍有调度机会。</li>
-<li><code>SCHED-INIT</code>：按最大 init 请求筛选节点。</li>
-<li><code>SCHED-SCORE</code>：按资源占用比例选择节点。</li>
-</ul>
-<p>本小节在普通用户环境运行，通过对象验证调度；实际容器会在后续集成测试中运行。</p>
-<h2 id="提示">提示</h2>
-<p>可以每轮 List 节点与 Pod，重新计算占用，再处理未绑定对象。绑定使用 API 的版本保护；
-请求冲突后重新读取，确认 Pod 是否已经被分配。被过滤的 Pod 应留在等待状态，供之后重试。</p>
-<h2 id="按-stage-提交">按 stage 提交</h2>
-<p>本小节分为 4 个 stage。先查看第一项任务：</p>
-<pre><code class="language-bash">minik8s stage 7.1
-</code></pre>
-<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
-临时练习时指定完整编号，例如：</p>
-<pre><code class="language-bash">minik8s submit --stage 7.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>7. Scheduler：筛选、资源、评分与绑定 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="7-scheduler筛选资源评分与绑定">7. Scheduler：筛选、资源、评分与绑定</h1>
+<p>用测试创建的 Node 对象验证 节点筛选、已绑定 Pod 的资源占用、应用和 init 容器的资源请求、饥饿、释放与评分；不启动真实容器，不要求特定 Informer 实现。</p>
+<h2 id="本节接入">本节接入</h2>
+<p>本节运行 apiserver 和你的 scheduler。测试器通过 API 创建 Node 对象和 Pod，预设 Node 的 Ready、allocatable 等字段；需要预占用资源时，再创建已绑定的 Pod。scheduler 选择节点并通过绑定接口写回结果。</p>
+<p>测试器 GET Pod，读取 <code>spec.nodeName</code> 判断它被绑定到哪里。例子里的 good、small 等是节点的简称，实际名字带有本轮前缀。CPU 请求单位为毫核，内存请求单位为字节。结束后测试器按自己记录的名字删除 Node。</p>
+<h2 id="关卡">关卡</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>新增行为</th>
+<th>检查 ID</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7.1</td>
+<td><a href="../steps/7.1.html">排除未就绪节点</a></td>
+<td><code>SCHED-FILTER-READY</code></td>
+</tr>
+<tr>
+<td>7.2</td>
+<td><a href="../steps/7.2.html">排除零容量节点</a></td>
+<td><code>SCHED-FILTER-ZERO</code></td>
+</tr>
+<tr>
+<td>7.3</td>
+<td><a href="../steps/7.3.html">排除 cordon 节点</a></td>
+<td><code>SCHED-FILTER-UNSCHEDULABLE</code></td>
+</tr>
+<tr>
+<td>7.4</td>
+<td><a href="../steps/7.4.html">已绑定 Pod 占用容量</a></td>
+<td><code>SCHED-CAPACITY-OCCUPIED</code></td>
+</tr>
+<tr>
+<td>7.5</td>
+<td><a href="../steps/7.5.html">删除后释放容量</a></td>
+<td><code>SCHED-CAPACITY-RELEASE</code></td>
+</tr>
+<tr>
+<td>7.6</td>
+<td><a href="../steps/7.6.html">多应用容器请求求和</a></td>
+<td><code>SCHED-SUM-CONTAINERS</code></td>
+</tr>
+<tr>
+<td>7.7</td>
+<td><a href="../steps/7.7.html">过大的 Pod 不阻塞小 Pod</a></td>
+<td><code>SCHED-STARVATION</code></td>
+</tr>
+<tr>
+<td>7.8</td>
+<td><a href="../steps/7.8.html">按最大 init CPU 计算</a></td>
+<td><code>SCHED-INIT-CPU</code></td>
+</tr>
+<tr>
+<td>7.9</td>
+<td><a href="../steps/7.9.html">按最大 init 内存计算</a></td>
+<td><code>SCHED-INIT-MEMORY</code></td>
+</tr>
+<tr>
+<td>7.10</td>
+<td><a href="../steps/7.10.html">按利用率比例评分</a></td>
+<td><code>SCHED-SCORE-FRACTION</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>教程：<a href="https://rb-tyz.github.io/minik8s-tutorial/?lang=both#12-phase-7--mini-scheduler-filter-score-bind">§12 mini-scheduler</a> · <a href="../../docs/ADAPTER.html">接入说明</a> · <a href="../../docs/COURSE-CLI.html">提交、回归与排错</a></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

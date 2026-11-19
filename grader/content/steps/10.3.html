@@ -1,28 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 10.3：转发 UDP 请求 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-103转发-udp-请求">Stage 10.3：转发 UDP 请求</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>为 UDP Service 建立对应转发规则。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节实现 Service Proxy。Service 给一组 Pod 提供固定的虚拟 IP（ClusterIP）；Endpoints
-列出当前可用的 Pod 地址和端口。Proxy 读取这两种对象，在节点上维护转发规则。</p>
-<p>测试器调用 <code>start all 数据目录</code>，由脚本启动 API、kubelet、scheduler、控制器和 Proxy。
-随后它创建对象、等待真实容器就绪，再向 Pod IP 或 Service IP 发送请求。本节在实验 KVM 内运行。
-本文地址用于展示数据关系，程序按实际对象中的地址和端口生成规则。</p>
-<h2 id="udp-使用另一种传输协议">UDP 使用另一种传输协议</h2>
-<p>测试器启动 fixture 的 <code>udp :8082</code> 模式，环境变量 POD_MARK=first。Service 入口是
-18082，protocol=UDP，命名目标端口对应应用的 8082。</p>
-<p>测试程序发送一个 UDP 数据报到 Service-IP:18082，等待返回 first。UDP 按数据报发送，
-这次探针使用课程提供的 udp-fetch 功能。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>在规则中使用对象声明的协议，分别处理 TCP 与 UDP 的端口匹配。DNAT 的目标仍来自当前
-Endpoints 中的地址和端口，应用回复需要能经正常返程到达发送者。</p>
-<p><a href="../stages/10-service-proxy.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 10.3：UDP 端口转发 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-103udp-端口转发">Stage 10.3：UDP 端口转发</h1>
+<p>让 proxy 对 UDP Service 配置转发。测试器在 KVM 中运行 fixture udp-fetch，通过 VIP 访问 Pod 里的 UDP 服务，比较返回标记。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>PROXY-UDP</code>：UDP 请求收到 first 标记响应。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>UDP 探针收到 first。</p>
+<pre><code class="language-text">Pod 容器端口 name="first", containerPort=8082, protocol=UDP
+Service port=18082, targetPort="first", protocol=UDP
+fixture udp-fetch VIP:18082 → first
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 10.3
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>协议参与规则匹配；DNAT 对 UDP 同样生效。</p>
+<p><a href="../stages/10-service-proxy.html">第 10 节接入说明</a> · 沿用 <a href="10.1.html">10.1 单后端 TCP ClusterIP</a> · 检查 <code>PROXY-UDP</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

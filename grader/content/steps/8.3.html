@@ -1,31 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 8.3：区分归属与标签 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-83区分归属与标签">Stage 8.3：区分归属与标签</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>识别真正属于 ReplicaSet 的 Pod。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节实现控制器：持续比较“用户想要的对象”与“API 中已有的对象”，补做创建、更新或删除。
-测试器调用 <code>start controllers 数据目录</code>，由脚本启动 API 和控制器程序。</p>
-<p>测试器主要通过 HTTP 创建父对象，再查询子对象。这里可在普通用户环境运行，Pod 的就绪状态
-由测试器通过 <code>/status</code> 写入，便于先检查控制算法。实际容器和通信在第十小节组合验收。</p>
-<h2 id="标签匹配和父子归属各管什么">标签匹配和父子归属各管什么</h2>
-<p>labels 是对象上的普通键值标签，例如 app=replicas。ownerReferences 则声明它属于哪个
-控制器对象。测试器先创建一个只有相同标签、没有父对象引用的独立 Pod，再创建 replicas=2
-的 ReplicaSet。</p>
-<p>两个受控 Pod 应具有类似的引用：</p>
-<pre><code class="language-json">{"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"replicas","uid":"rs-a","controller":true}]}
-</code></pre>
-<p>这是 metadata 中的字段。测试器核对真实父 UID、类型与 controller 标记，并确认独立 Pod
-仍保留自己的 UID，ownerReferences 仍为空。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>按本课程约定，只把 owner UID 匹配的活跃 Pod 计入受控副本。标签用于模板匹配和查询，
-父引用用于识别生命周期归属。创建新副本时附上完整引用。</p>
-<p><a href="../stages/08-controllers.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 8.3：replicas=N 创建 N 个 Pod · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-83replicasn-创建-n-个-pod">Stage 8.3：replicas=N 创建 N 个 Pod</h1>
+<p>让 RS 控制器在期望副本数为 3 时创建三个不同的子 Pod。测试器按 owner UID 筛选，然后比较名称。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>CTRL-OWNER</code>：两个受控 Pod 拥有正确 ownerReference，独立 Pod 继续存在。</p>
-<p>本阶段使用 普通用户 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>3 个不同名称的受控 Pod。</p>
+<pre><code class="language-text">POST RS replicas=3
+wait owner 匹配的 Pod 数=3
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 8.3
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>循环创建直到差额为 0；失败重试不能重复占用同名 slot。</p>
+<p><a href="../stages/08-controllers.html">第 8 节接入说明</a> · 沿用 <a href="8.2.html">8.2 replicas=1 创建一个 Pod</a> · 检查 <code>RS-N</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

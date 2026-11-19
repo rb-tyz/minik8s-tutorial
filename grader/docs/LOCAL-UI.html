@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>本地课程界面 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="本地课程界面">本地课程界面</h1>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>本地课程界面 · MiniK8s</title><link rel="stylesheet" href="../../style.css"></head><body><header><nav><a href="../../index.html">MiniK8s · 订正版</a><a href="../content/README.html">课程关卡</a><a href="../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="本地课程界面">本地课程界面</h1>
 <p>安装命令后，在学习者项目目录运行：</p>
 <pre><code class="language-bash">minik8s serve
 </code></pre>
@@ -8,18 +8,18 @@
 <p>服务使用 Python 标准库；页面的 HTML、CSS、JavaScript 随测试器分发，运行时无需下载前端依赖。
 停止服务使用 Ctrl+C，服务会请求正在运行的提交停止，并等待测试器清理。</p>
 <h2 id="页面操作">页面操作</h2>
-<p>左侧按十个小节分组，展开后选择小 stage。任务说明展示当前一项能力，实现提示提供建议与检查点。
-点击任务内的接入说明、首次提交或小节原理链接，可在页面中阅读，再返回当前 stage。
-配置按钮设置 adapter、driver、API 地址、CNI、fixture 和 VM UUID，配置保存在当前项目。</p>
+<p>左侧按十个小节分组，展开后选择小 stage。每关先说明你要实现的行为，再给测试输入、通过条件和实现提示。页尾可打开本节的接入说明和对应的前置关卡；安装、进度与排错在公共指南中。教程等外部资料在新标签页打开。
+配置按钮设置 adapter、driver、调用协议、API 地址、CNI 和 fixture，配置保存在当前项目。正常提交不需要填写 VM UUID；<code>minik8s submit</code> 会为每个 stage 自动创建一次性 KVM。</p>
 <p>“提交本阶段”验收当前进度，通过后保存下一阶段。浏览其他阶段时，按钮变为“练习本阶段”，
 该模式保留课程进度。“全量测试”从第一阶段开始，遇首个失败停止。
 测试结果显示逐项状态、失败原因与运行日志；取消后等待清理完成，再允许发起下一次提交。</p>
 <p>页面与终端共用 <code>.minik8s/</code>。在另一个终端提交后，页面会刷新进度。服务重启后读取已有进度
 与最近结果。一个服务对应一个学习者项目。</p>
 <h2 id="实验环境">实验环境</h2>
-<p>普通用户阶段可以在宿主机提交。容器和网络阶段继续在准备好的隔离 KVM 内运行；
-测试器核对实际 VM 身份，服务沿用这项检查。</p>
-<p>在 KVM 中启动课程服务后，可以使用 SSH 转发同一端口，在本机浏览器访问：</p>
+<p>每次 <code>submit</code> 都会从 <code>~/.cache/minik8s/vm/base.qcow2</code> 启动一个一次性 guest，并用同目录 <code>base.sha512</code> 校验。
+1.1 起的普通用户态检查在 guest 内运行，容器、cgroup 和网络阶段使用同一 guest 的能力；
+宿主机不执行特权实验。低层 <code>test.sh</code> 仍可在已提供的 guest 内运行并核对 VM 身份。</p>
+<p>课程服务可以运行在学习环境或该 guest 中。用 SSH 转发同一端口后，在本机浏览器访问：</p>
 <pre><code class="language-bash">ssh -N -L 7331:127.0.0.1:7331 user@lab-vm
 </code></pre>
 <p>第一小节的文件准备和 VM 内提交见 <a href="FIRST-SUBMISSION.html">首次提交</a>。</p>
@@ -34,7 +34,7 @@
 <tbody>
 <tr>
 <td>GET /api/course</td>
-<td>十个小节、70 个 stage 正文、项目路径、配置及本次服务的提交令牌</td>
+<td>十个小节、170 个 stage 正文、项目路径、配置及本次服务的提交令牌</td>
 </tr>
 <tr>
 <td>GET /api/material?path=grader/docs/ADAPTER.md</td>
@@ -79,8 +79,11 @@
 <pre><code class="language-bash">python3 -m unittest discover -s grader/tests -v
 python3 grader/verify-teaching.py
 mkdir -p /tmp/minik8s-reader-check
-node grader/verify-reader.mjs http://127.0.0.1:7331 /tmp/minik8s-reader-check
+python3 grader/verify-single-page.py --output /tmp/minik8s-reader-check
 </code></pre>
-<p>浏览器检查需先启动课程服务，另需 Node.js 22+ 和本机 Google Chrome。它使用独立无头浏览器，
-检查阶段输入示例、说明链接、表格、中文段落跳转、返回阶段与桌面/窄屏布局，并保存截图。
-此入口只阅读课程材料，保留学习者进度和源码。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<p>浏览器检查自动启动临时课程服务，需要 Python Playwright 和本机 Google Chrome。它检查全部阶段的单页说明、页内提示、一次 KV 提交及桌面/窄屏布局，并保存截图；测试使用临时工程。</p>
+<p>单页任务与新调用接口的验收：</p>
+<pre><code class="language-bash">python3 grader/verify-single-page.py --output /tmp/minik8s-single-page-check
+python3 -m unittest discover -s grader/tests -v
+</code></pre>
+<p>浏览器验收使用 Python Playwright 和系统 Chrome，临时启动本地课程服务，逐一检查 170 页并运行一次普通用户态 KV 提交。</p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

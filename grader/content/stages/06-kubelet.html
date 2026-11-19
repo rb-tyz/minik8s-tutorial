@@ -1,45 +1,129 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小节 6：让 Pod 变成运行中的容器 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="小节-6让-pod-变成运行中的容器">小节 6：让 Pod 变成运行中的容器</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>在本小节，你要实现节点上的 kubelet：读取分配给本节点的 Pod，调用运行时创建任务，
-再把观察到的结果写回 API。完成后，你就可以通过创建 Pod 对象来启动真实程序。
-对应教程第 11 节。</p>
-<h2 id="从期望状态到实际状态">从期望状态到实际状态</h2>
-<p>Pod 的 spec 描述要运行什么，运行时提供当前实际运行的容器。kubelet 周期性比较两者，
-决定创建、等待、重试或清理。这一次比较与处理称为调谐。</p>
-<pre><code class="language-text">Pod 分配给本节点
-  → 按顺序运行 init 容器
-  → init 全部成功后启动应用容器
-  → 查询实际状态并写回 Pod status
-</code></pre>
-<p>本小节由测试器填写 nodeName，使用节点网络，便于先把运行流程做通。</p>
-<h2 id="任务失败之后怎么办">任务失败之后怎么办？</h2>
-<p>init 容器失败时，后面的应用容器应继续等待。应用容器退出时，根据退出码和 restartPolicy
-决定 Pod 的结果以及是否重启。例如 Never 策略下退出 42 的任务应报告失败；OnFailure
-策略下失败的任务需要重试。</p>
-<p>镜像拉取同样会失败。测试会让 registry 暂时返回 503，再恢复服务。你的 kubelet 应报告
-这次错误，并在之后重新尝试，让同一个 Pod 最终运行起来。</p>
-<h2 id="配置和卷也要传到容器里">配置和卷也要传到容器里</h2>
-<p>除了镜像和命令，还要传入环境变量、资源限制和卷。这里使用 hostPath：init 容器先写入
-共享目录，应用容器读取该内容；只读卷应实际阻止写入。</p>
-<p>kubelet 重启后，先读取已有运行资源，再决定是否创建。API 短暂不可用时，已经运行的
-容器继续运行；恢复连接后重新上报状态。</p>
-<h2 id="测试如何运行">测试如何运行</h2>
-<p>测试器启动 API 与 kubelet，创建已绑定的 Pod，并通过实际 CRI 状态核对结果：</p>
-<ul>
-<li><code>NODE-RUN</code>、<code>NODE-RESOURCES</code>：真实任务运行，内核资源与安全设置生效。</li>
-<li><code>NODE-EXIT</code>、<code>NODE-INIT</code>：退出码、Pod 结果和 init 执行顺序。</li>
-<li><code>NODE-VOLUME</code>：环境变量、共享目录、只读映射和失败后重试。</li>
-<li><code>NODE-PULL</code>：镜像拉取出错后恢复。</li>
-<li><code>NODE-RESTART</code>、<code>NODE-API-OUTAGE</code>：重启接管与 API 中断后的恢复。</li>
-</ul>
-<h2 id="提示">提示</h2>
-<p>可以先只支持一个已绑定 Pod，再逐项增加状态处理。用 Pod UID 区分同名重建的对象，用
-实际容器身份识别已有任务。每次调谐都应能在前一次部分成功后继续执行。</p>
-<h2 id="按-stage-提交">按 stage 提交</h2>
-<p>本小节分为 11 个 stage。先查看第一项任务：</p>
-<pre><code class="language-bash">minik8s stage 6.1
-</code></pre>
-<p>正常学习时逐项执行 <code>minik8s submit</code>，每次只验收当前一项能力。
-临时练习时指定完整编号，例如：</p>
-<pre><code class="language-bash">minik8s submit --stage 6.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>6. Kubelet：已绑定 Pod、init、重启与恢复 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="6-kubelet已绑定-podinit重启与恢复">6. Kubelet：已绑定 Pod、init、重启与恢复</h1>
+<p>只启动 API 与 kubelet，手工填写 nodeName。分开验收登记、心跳、节点过滤、实际容器、状态、资源、退出策略、卷、镜像失败、删除、接管和短暂中断。</p>
+<h2 id="本节接入">本节接入</h2>
+<p>测试器通过启停脚本启动 API 和 kubelet，通过 API 创建测试 Pod，并在需要时填写 spec.nodeName。你的 kubelet 读取绑定到本节点的 Pod，调用 CRI，向 API 写回 Pod.status。测试器从 API 读取状态，部分关卡还用 crictl inspect 核对真实容器。</p>
+<p>fixture 是镜像里的应用程序，exit、env、write、require 是它接收的参数。hostPath 指 KVM 节点上的目录；volumeMount.mountPath 是容器内看到的路径。检查容器退出、故障恢复和重启时，区分 fixture 的退出码、Pod 状态和 kubelet 进程的生命周期。</p>
+<p>使用 <code>--adapter ./test-hooks --fixture ./lab</code> 接入这个小节。guest 需有可用的 CRI、crictl、测试镜像，镜像恢复关还用本地 registry。<a href="../../docs/ADAPTER.html#%E6%B5%8B%E8%AF%95%E9%95%9C%E5%83%8F%E4%B8%8E-registry">镜像与运行时准备</a></p>
+<h2 id="关卡">关卡</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>新增行为</th>
+<th>检查 ID</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>6.1</td>
+<td><a href="../steps/6.1.html">登记 Node 并上报 Ready</a></td>
+<td><code>NODE-REGISTER</code></td>
+</tr>
+<tr>
+<td>6.2</td>
+<td><a href="../steps/6.2.html">更新心跳时间</a></td>
+<td><code>NODE-HEARTBEAT</code></td>
+</tr>
+<tr>
+<td>6.3</td>
+<td><a href="../steps/6.3.html">不运行 nodeName 为空的 Pod</a></td>
+<td><code>NODE-UNSCHEDULED-FILTER</code></td>
+</tr>
+<tr>
+<td>6.4</td>
+<td><a href="../steps/6.4.html">不接管其他节点的 Pod</a></td>
+<td><code>NODE-OTHER-NODE</code></td>
+</tr>
+<tr>
+<td>6.5</td>
+<td><a href="../steps/6.5.html">运行一个已绑定 Pod</a></td>
+<td><code>NODE-RUN</code></td>
+</tr>
+<tr>
+<td>6.6</td>
+<td><a href="../steps/6.6.html">运行多容器 Pod</a></td>
+<td><code>NODE-MULTI-CONTAINER</code></td>
+</tr>
+<tr>
+<td>6.7</td>
+<td><a href="../steps/6.7.html">映射实际状态与容器 ID</a></td>
+<td><code>NODE-STATUS-MAP</code></td>
+</tr>
+<tr>
+<td>6.8</td>
+<td><a href="../steps/6.8.html">实际容器内核对资源与安全</a></td>
+<td><code>NODE-RESOURCES</code></td>
+</tr>
+<tr>
+<td>6.9</td>
+<td><a href="../steps/6.9.html">Never 策略保留失败退出码</a></td>
+<td><code>NODE-EXIT-42</code></td>
+</tr>
+<tr>
+<td>6.10</td>
+<td><a href="../steps/6.10.html">Never 策略成功终态</a></td>
+<td><code>NODE-EXIT-0</code></td>
+</tr>
+<tr>
+<td>6.11</td>
+<td><a href="../steps/6.11.html">传入环境变量</a></td>
+<td><code>NODE-ENV</code></td>
+</tr>
+<tr>
+<td>6.12</td>
+<td><a href="../steps/6.12.html">init 写共享目录，应用读取</a></td>
+<td><code>NODE-VOLUME-SHARED</code></td>
+</tr>
+<tr>
+<td>6.13</td>
+<td><a href="../steps/6.13.html">只读卷拒绝写入</a></td>
+<td><code>NODE-READONLY</code></td>
+</tr>
+<tr>
+<td>6.14</td>
+<td><a href="../steps/6.14.html">按顺序完成 init 后启动应用</a></td>
+<td><code>NODE-INIT-SUCCESS</code></td>
+</tr>
+<tr>
+<td>6.15</td>
+<td><a href="../steps/6.15.html">init 失败阻止应用启动</a></td>
+<td><code>NODE-INIT-FAIL</code></td>
+</tr>
+<tr>
+<td>6.16</td>
+<td><a href="../steps/6.16.html">OnFailure 失败后重试</a></td>
+<td><code>NODE-RETRY-ONFAILURE</code></td>
+</tr>
+<tr>
+<td>6.17</td>
+<td><a href="../steps/6.17.html">镜像失败后恢复</a></td>
+<td><code>NODE-PULL-RECOVER</code></td>
+</tr>
+<tr>
+<td>6.18</td>
+<td><a href="../steps/6.18.html">删除 Pod 并回收实际容器</a></td>
+<td><code>NODE-DELETE</code></td>
+</tr>
+<tr>
+<td>6.19</td>
+<td><a href="../steps/6.19.html">重启 kubelet 接管现有容器</a></td>
+<td><code>NODE-RESTART-ADOPT</code></td>
+</tr>
+<tr>
+<td>6.20</td>
+<td><a href="../steps/6.20.html">短暂 API 中断不删容器</a></td>
+<td><code>NODE-API-OUTAGE</code></td>
+</tr>
+<tr>
+<td>6.21</td>
+<td><a href="../steps/6.21.html">独立运行并删除两个 Pod</a></td>
+<td><code>NODE-MULTI-POD</code></td>
+</tr>
+<tr>
+<td>6.22</td>
+<td><a href="../steps/6.22.html">Always 策略重启退出任务</a></td>
+<td><code>NODE-ALWAYS-RESTART</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>教程：<a href="https://rb-tyz.github.io/minik8s-tutorial/?lang=both#11-phase-6--mini-kubelet-the-node-agent">§11 mini-kubelet</a> · <a href="../../docs/ADAPTER.html">接入说明</a> · <a href="../../docs/COURSE-CLI.html">提交、回归与排错</a></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

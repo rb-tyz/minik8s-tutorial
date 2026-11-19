@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 10.12：完整 MiniK8s 黑盒流程 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-1012完整-minik8s-黑盒流程">Stage 10.12：完整 MiniK8s 黑盒流程</h1>
+<p>让完整的 MiniK8s 一起工作。测试器通过 API 创建 Deployment、删除子 Pod、更新模板并访问 Service，检查控制器补副本、调度器绑定、kubelet 运行容器和 proxy 转发的结果。</p>
+<h2 id="测试方式">测试方式</h2>
+<p>七组综合检查都通过，测试器收到成功报告并完成本轮资源清理。</p>
+<pre><code class="language-text">测试器依次执行 API、PATCH、Watch、Pod、ReplicaSet、Deployment 和 Service 检查
+其中包括删除子 Pod 后补回副本、更新 Deployment 模板、请求 Service VIP。
+</code></pre>
+<h2 id="实现思路">实现思路</h2>
+<p>这是前面组件一起运行的综合回归。遇到失败时先看终端的子检查名；<code>legacy-all/summary.json</code> 记录综合测试结果。</p>
+<p><a href="../stages/10-service-proxy.html">第 10 节接入说明</a> · 沿用 <a href="10.9.html">10.9 重启保留无关 NAT 规则</a> · 检查 <code>PROXY-E2E</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>

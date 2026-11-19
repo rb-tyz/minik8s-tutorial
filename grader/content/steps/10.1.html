@@ -1,33 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 10.1：访问单后端 Service · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-101访问单后端-service">Stage 10.1：访问单后端 Service</h1>
-<h2 id="你的任务">你的任务</h2>
-<p>把发往 ClusterIP 的 TCP 请求转发到一个就绪 Pod。</p>
-<h2 id="程序怎样被调用">程序怎样被调用</h2>
-<p>本小节实现 Service Proxy。Service 给一组 Pod 提供固定的虚拟 IP（ClusterIP）；Endpoints
-列出当前可用的 Pod 地址和端口。Proxy 读取这两种对象，在节点上维护转发规则。</p>
-<p>测试器调用 <code>start all 数据目录</code>，由脚本启动 API、kubelet、scheduler、控制器和 Proxy。
-随后它创建对象、等待真实容器就绪，再向 Pod IP 或 Service IP 发送请求。本节在实验 KVM 内运行。
-本文地址用于展示数据关系，程序按实际对象中的地址和端口生成规则。</p>
-<h2 id="一个请求经过哪些地址">一个请求经过哪些地址</h2>
-<p>测试器创建名为 ports 的 Pod。应用用 fixture 的 <code>http :8080</code> 模式监听，POD_MARK=first
-决定它返回的正文。随后创建 Service，相关配置为：</p>
-<pre><code class="language-json">{"selector":{"app":"ports"},"ports":[{"name":"first","port":18080,"targetPort":"first","protocol":"TCP"}]}
-</code></pre>
-<p>targetPort 的 first 来自 Pod 声明的端口名，对应 8080。Service 的 clusterIP 初始可以为空；
-本课程由 Proxy 从配置地址池选择空闲地址，并带版本条件写回 Service。</p>
-<p>得到地址后，测试器访问 <code>http://Service-IP:18080</code>，期望正文 first。它随后删除 Service，
-检查实际 NAT 规则里该 VIP 的目标匹配已撤掉。VIP 是虚拟 IP 的简称。</p>
-<h2 id="实现思路">实现思路</h2>
-<p>先读取 Service/Endpoints，补齐空 clusterIP，再建立 TCP 端口到后端的转发。iptables 是
-Linux 管理报文规则的工具；DNAT 用来修改目标 IP 和端口。同步时只管理自己的规则，
-Service 删除后回收对应入口。</p>
-<p><a href="../stages/10-service-proxy.html">本小节的原理与接口说明</a></p>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 10.1：单后端 TCP ClusterIP · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-101单后端-tcp-clusterip">Stage 10.1：单后端 TCP ClusterIP</h1>
+<p>让你的 proxy 根据 Service 和 Endpoints 配置 TCP 转发。测试器从 KVM 请求 ClusterIP；返回正文的是后端 Pod 中的 fixture。</p>
 <h2 id="测试方式">测试方式</h2>
-<p><code>PROXY-TCP</code>：访问 VIP 得到后端标记，删除 Service 后对应 VIP 规则消失。</p>
-<p>本阶段使用 KVM 环境，只执行这一项检查。测试会准备本次输入，并在结束后回收本次资源。</p>
-<h2 id="提交代码">提交代码</h2>
-<p>当前进度位于本阶段时执行：</p>
-<pre><code class="language-bash">minik8s submit
+<p>请求返回 first；Service 删除与规则收敛由后面的专关验收。</p>
+<pre><code class="language-text">Pod http :8080 POD_MARK=first
+Service selector app=ports port 18080 targetPort first
+curl http://VIP:18080 -&gt; first
 </code></pre>
-<p>临时练习本阶段，保留课程进度：</p>
-<pre><code class="language-bash">minik8s submit --stage 10.1
-</code></pre></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
+<h2 id="实现思路">实现思路</h2>
+<p>补齐空 clusterIP；从 Endpoints 解析 targetPort；建立 TCP DNAT。</p>
+<p><a href="../stages/10-service-proxy.html">第 10 节接入说明</a> · 沿用 <a href="4.18.html">4.18 绑定 Pod 到存在的 Node</a> · 检查 <code>PROXY-TCP</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
