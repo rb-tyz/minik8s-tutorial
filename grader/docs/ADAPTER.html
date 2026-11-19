@@ -55,7 +55,7 @@
 测试器通过 <code>--state-dir</code> 把本轮状态路径传给这个程序，同一轮的多次调用复用该路径。
 1.1 只需接收这个参数。后续关卡如果用文件保存跨调用的容器 ID、PID 或运行时标识，再按需创建目录。
 实际容器可由 runc/containerd 的常驻进程管理。
-后台任务应在命令返回后继续运行，并把输出重定向到本轮日志文件或 stderr。</p>
+后台任务在命令返回后继续运行。父命令退出时，测试器读取它写到 stdout 的 JSON。如果任务也会打印内容，可把任务输出接到 stderr 或本轮日志文件。</p>
 <p>命令成功完成时向 stdout 输出一个 JSON 对象并退出 0，诊断写 stderr。操作成功时响应含 <code>ok:true</code>。
 已处理的业务错误也用退出码 0，但返回 <code>ok:false</code> 与 <code>code</code>；启动失败、参数错误或内部故障用非零退出码。
 子容器退出 42 时，调用命令本身应退出 0，JSON 中填 <code>exitCode:42</code>。</p>
@@ -112,7 +112,7 @@
 </tr>
 <tr>
 <td>--wait</td>
-<td>true 等待退出；false 在后台入口就绪后返回</td>
+<td>true 等待退出；false 在子进程创建后可返回其 KVM PID，测试器会等待该进程执行 fixture</td>
 </tr>
 <tr>
 <td>--arg</td>

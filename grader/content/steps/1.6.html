@@ -1,11 +1,11 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stage 1.6：启动后台任务并返回身份 · MiniK8s</title><link rel="stylesheet" href="../../../style.css"></head><body><header><nav><a href="../../../index.html">MiniK8s · 订正版</a><a href="../README.html">课程关卡</a><a href="../../../tutorial/corrections/README.html">订正记录</a><a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Harut8 原文</a></nav></header><main><aside class="attribution"><strong>原出处 / Attribution</strong><br>Harut8 / system-design — <a href="https://github.com/Harut8/system-design/blob/506abffc121e7ad98cdc8f310a9f0a8db69d0843/kubernetes/38-building-a-kubernetes-from-scratch.md">Building a Kubernetes from Scratch: The minik8s Capstone</a>。本订正版由 rb-tyz 整理发布，保留原文 24 节，修订代码与技术说明。<a href="../../../tutorial/corrections/README.html">订正记录</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>。原文及其改编沿用该许可；原文代码采用 MIT。<a href="https://harut8.github.io/system-design/">原系列索引</a>。</aside><h1 id="stage-16启动后台任务并返回身份">Stage 1.6：启动后台任务并返回身份</h1>
 <p>当测试器传入 <code>--wait false</code> 时，让 <code>my-minik8s</code> 在后台启动 fixture，把每个 <code>--arg</code> 原样传给它，然后返回任务 ID 和 fixture 在 KVM 中的 PID。my-minik8s 退出后，fixture 应继续运行。</p>
 <h2 id="测试方式">测试方式</h2>
-<p>假设这次传入 <code>--arg=pause --arg=run-bg-1</code>，测试器就按返回的 PID 在 KVM 中核对程序是 fixture，两个参数依次是 <code>pause</code> 和 <code>run-bg-1</code>。标记由测试器生成。</p>
+<p>例如传入 <code>--arg=pause --arg=run-bg-1</code> 时，测试器会等同一个 PID 执行 fixture，再核对它收到的两个参数。若该进程提前退出或直到超时仍未执行指定命令，终端会显示期望值和实际结果。</p>
 <pre><code class="language-text">./bin/my-minik8s container-run --state-dir work --rootfs lab/rootfs \
   --cgroup-parent "$parent" --nonce run-bg --wait false --arg=pause --arg=run-bg-1
 {"ok":true,"id":"task-1","pid":2451}
 </code></pre>
 <h2 id="实现思路">实现思路</h2>
-<p>Go 的 <code>exec.Command(fixturePath, args...)</code> 可以原样传递参数，<code>cmd.Env</code> 可以保持默认值。如果你创建了 PID 命名空间，返回从 KVM 外层看到的 fixture PID。本关结束后测试器会终止它。</p>
+<p>Go 的 <code>exec.Command(fixturePath, args...)</code> 可以原样传递参数，<code>cmd.Env</code> 可以保持默认值。如果你先启动 child-run，由它准备完根目录后 exec 成 fixture，外层 Start 成功就可以返回 child-run 在 KVM 中的 PID。本关结束后测试器会终止它。</p>
 <p><a href="../stages/01-containers.html">第 1 节接入说明</a> · 沿用 <a href="1.1.html">1.1 等待一个普通子进程完成</a> · 检查 <code>PROCESS-BACKGROUND</code></p></main><footer>原作者 Harut8 · 修订发布 rb-tyz · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></footer></body></html>
