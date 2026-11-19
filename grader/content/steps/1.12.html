@@ -4,7 +4,7 @@
 <p>任务 ipc namespace 链接与 /proc/self/ns/ipc 不同。</p>
 <pre><code class="language-text">./bin/my-minik8s container-run --state-dir work --rootfs lab/rootfs \
   --cgroup-parent "$parent" --nonce run-a --cpu 50 --memory 67108864 --pids 512 \
-  --wait false --arg=pause
+  --wait false --arg=pause --arg=run-a-1
 # 测试器读取：/proc/&lt;pid&gt;/ns/ipc 与测试进程的不同
 </code></pre>
 <h2 id="实现思路">实现思路</h2>

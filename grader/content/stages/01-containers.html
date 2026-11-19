@@ -4,7 +4,7 @@
 <p>测试器调用你编译的 <code>./bin/my-minik8s</code>。它要启动的子进程是课程提供的 <code>fixture</code>。例如，<code>--rootfs lab/rootfs --arg=exit --arg=42</code> 表示运行 <code>lab/rootfs/fixture exit 42</code>。测试器读取 my-minik8s 的 stdout 取得 JSON，诊断文字走 stderr。</p>
 <p>fixture 的相对文件名从 rootfs 下解析。使用普通进程时，把子进程的工作目录设为 rootfs；使用容器时，让它从容器内的 <code>/</code> 启动。</p>
 <p>每次子命令都启动一个新的 my-minik8s 进程。同一关的多次调用共用 <code>--state-dir</code>；需要跨调用保存 PID 等数据时，由你的程序按需创建这个目录。每次 <code>container-run</code> 还收到 <code>--cgroup-parent</code>，指向本轮 KVM 内已启用 cpu、memory、pids 的 cgroup v2 父目录。示例中用 <code>$parent</code> 表示这个路径。</p>
-<p>1.1–1.5 等待子进程结束。后台启动时，传给入口进程的环境必须包含 <code>GRADER_NONCE</code>，值等于这次的 <code>--nonce</code>。1.6 首次启动后台任务，本关由测试器按 PID 和标记回收 fixture。1.7 开始调用你的 reset 来清理同一状态目录下的任务。1.8 起传入资源参数并逐项检查隔离；1.13–1.15 分别读回 CPU、内存和进程数上限。reset 回收自己建立的子组，测试器负责父组。</p>
+<p>1.1–1.5 等待子进程结束。后台调用通过两个 <code>--arg</code> 传入 <code>pause</code> 和本次启动的标记。你的程序把参数依次传给 fixture；进程环境由你的实现决定。1.6 首次启动后台任务，本关由测试器按 PID 和标记回收 fixture。1.7 开始调用你的 reset 来清理同一状态目录下的任务。1.8 起传入资源参数并逐项检查隔离；1.13–1.15 分别读回 CPU、内存和进程数上限。reset 回收自己建立的子组，测试器负责父组。</p>
 <h2 id="关卡">关卡</h2>
 <div class="table-wrap"><table>
 <thead>

@@ -4,7 +4,7 @@
 <p>mount namespace 链接与节点不同；任务根目录里能找到 fixture。</p>
 <pre><code class="language-text">./bin/my-minik8s container-run --state-dir work --rootfs lab/rootfs \
   --cgroup-parent "$parent" --nonce run-iso --cpu 50 --memory 67108864 --pids 512 \
-  --wait false --arg=pause
+  --wait false --arg=pause --arg=run-iso-1
 # /proc/&lt;pid&gt;/ns/mnt 与节点不同；/proc/&lt;pid&gt;/root/fixture 可执行
 </code></pre>
 <h2 id="实现思路">实现思路</h2>

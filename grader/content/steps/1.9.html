@@ -4,7 +4,7 @@
 <p>pid namespace 链接与节点不同；NSpid 最后一项为 1。</p>
 <pre><code class="language-text">./bin/my-minik8s container-run --state-dir work --rootfs lab/rootfs \
   --cgroup-parent "$parent" --nonce run-a --cpu 50 --memory 67108864 --pids 512 \
-  --wait false --arg=pause
+  --wait false --arg=pause --arg=run-a-1
 # 测试器读取：/proc/&lt;pid&gt;/ns/pid 与测试进程的不同，NSpid 最后一项为 1
 </code></pre>
 <h2 id="实现思路">实现思路</h2>
